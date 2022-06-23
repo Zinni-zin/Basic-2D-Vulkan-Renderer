@@ -1,6 +1,6 @@
-#include "Input.h"
+#include "../../Headers/Input/Input.h"
 
-#include "../Core/Headers/Core.h"
+#include "../../Headers/Core/Core.h"
 
 namespace ZVK
 {

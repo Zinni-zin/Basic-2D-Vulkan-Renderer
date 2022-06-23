@@ -1,4 +1,4 @@
-#include "Headers/Texture2D.h"
+#include "../../Headers/Render/Texture2D.h"
 
 #include <iostream>
 #include <cmath>
@@ -6,39 +6,26 @@
 
 #include "../../vendor/stb_image/stb_image.h"
 
-#include "../Core/Headers/Core.h"
+#include "../../Headers/Core/Core.h"
 
 
 namespace ZVK
 {
-	std::queue<uint32_t> Texture2D::s_freedIDs;
-	std::queue<int> Texture2D::s_freedRangedIDs;
+	//std::queue<uint32_t> Texture2D::s_freedIDs;
 	uint32_t Texture2D::s_idCounter = 0;
-	int Texture2D::s_idRangedCounter = 0;
 
 	Texture2D::Texture2D()
 		: m_width(0), m_height(0), m_mipLevels(0)
 	{ 
 		m_id = s_idCounter;
 
-		if (s_idRangedCounter == Core::GetCore().GetMaxTextureSlots())
-			s_idRangedCounter = 0;
-
-		m_rangedID = s_idRangedCounter;
 		++s_idCounter;
-		++s_idRangedCounter;
 	}
 
 	Texture2D::Texture2D(const std::string& filePath, VkFormat colourFormat)
 	{
 		m_id = s_idCounter;
-
-		if (s_idRangedCounter == Core::GetCore().GetMaxTextureSlots())
-			s_idRangedCounter = 0;
-
-		m_rangedID = s_idRangedCounter;
 		++s_idCounter;
-		++s_idRangedCounter;
 
 		LoadTexture(filePath, colourFormat);
 	}
@@ -47,19 +34,10 @@ namespace ZVK
 	{
 		const VkDevice& device = Core::GetCore().GetDevice()->GetDevice();
 
-		vkDestroySampler(device, m_sampler, nullptr);
 		vkDestroyImageView(device, m_imageView, nullptr);
 
 		vkDestroyImage(device, m_image, nullptr);
 		vkFreeMemory(device, m_imageMemory, nullptr);
-		
-		if (Core::GetCore().Get2DTextures().size() > 0)
-		{
-			Core::GetCore().SwapTextures(this);
-			Core::GetCore().PopBackTexture2D();
-		}
-		else
-			Core::GetCore().PopBackTexture2D();
 	}
 
 	// VK_FORMAT_R8G8B8A8_UNORM
@@ -110,10 +88,10 @@ namespace ZVK
 		m_imageView = Core::GetCore().CreateImageView(m_image, colourFormat, 
 			VK_IMAGE_ASPECT_COLOR_BIT, m_mipLevels);
 
-		CreateTextureSampler();
-		Core::GetCore().AddTexture2D(this);
+		// CreateTextureSampler();
 	}
 
+	/*
 	void Texture2D::CreateTextureSampler()
 	{
 		ZDevice* pDevice = Core::GetCore().GetDevice();
@@ -146,6 +124,7 @@ namespace ZVK
 		if (vkCreateSampler(pDevice->GetDevice(), &samplerInfo, nullptr, &m_sampler) != VK_SUCCESS)
 			throw std::runtime_error("Failed to create texture sampler!");
 	}
+	*/
 
 	uint32_t Texture2D::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
 	{

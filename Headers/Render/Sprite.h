@@ -65,7 +65,6 @@ namespace ZVK
 		inline Vec4 GetUVInfo() const { return m_uvInfo; }
 
 		inline std::shared_ptr<Texture2D> GetTexture() const { return p_texture; }
-		inline int GetTextureRangedID() const { return p_texture->GetRangedID(); }
 		inline int GetTextureID() const { return p_texture->GetID(); }
 
 		void SetSubPos(Vec2ui pos);

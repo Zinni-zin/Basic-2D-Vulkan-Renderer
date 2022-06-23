@@ -1,6 +1,6 @@
-#include "Headers/Window.h"
+#include "../../Headers/Core/Window.h"
 
-#include "Headers/Core.h"
+#include "../../Headers/Core/Core.h" 
 
 namespace ZVK
 {
@@ -11,13 +11,13 @@ namespace ZVK
 	void windowCloseCallback(GLFWwindow* window);
 
 	ZWindow::ZWindow(const std::string& title, int width, int height)
-		: m_dimensions(width, height), m_isVsync(true), p_window(nullptr)
+		: m_dimensions(width, height), p_window(nullptr)
 	{
 		init(title, width, height);
 	}
 
 	ZWindow::ZWindow(const std::string& title, Vec2i dimensions)
-		: m_dimensions(dimensions), m_isVsync(true), p_window(nullptr)
+		: m_dimensions(dimensions), p_window(nullptr)
 	{
 
 		init(title, dimensions.x, dimensions.y);

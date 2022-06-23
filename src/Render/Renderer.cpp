@@ -1,14 +1,15 @@
-#include "Headers/Renderer.h"
+#include "../../Headers/Render/Renderer.h"
 
 #include <iostream>
 #include <stdexcept>
 #include <array>
 
-#include "../Core/Headers/Core.h"
+#include "../../Headers/Core/Core.h"
 
 namespace ZVK
 {
 	Renderer::Renderer()
+		: m_clearColour(0.05f, 0.05f, 0.05f, 1.f)
 	{
 		createCommandBuffers();
 		createSyncObjects();
@@ -55,11 +56,13 @@ namespace ZVK
 
 		vkResetCommandBuffer(m_cmdBuffers[m_curFrame], 0);
 
-		m_isFrameStarted = true;
+		beginFlush();
 	}
 
 	void Renderer::End()
 	{
+		endFlush();
+
 		ZSwapchain* pSwapchain = Core::GetCore().GetSwapchain();
 		ZDevice* pDevice = Core::GetCore().GetDevice();
 
@@ -104,9 +107,53 @@ namespace ZVK
 
 		vkWaitForFences(pDevice->GetDevice(), 1, &m_renderFences[m_curFrame], VK_TRUE, UINT64_MAX);
 
-		m_curFrame = (m_curFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+		for (RenderCmd* renderCmd : m_updateVertexCmds)
+			if (renderCmd != nullptr)
+				renderCmd->Execute();
 
-		m_isFrameStarted = false;
+		m_curFrame = (m_curFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	}
+
+	void Renderer::beginFlush()
+	{
+		ZSwapchain* pSwapchain = Core::GetCore().GetSwapchain();
+
+		std::array<VkClearValue, 2> clearValues{};
+		clearValues[0].color =
+		{ { m_clearColour.x, m_clearColour.y, m_clearColour.z, m_clearColour.w } };
+		clearValues[1].depthStencil = { 1.f, 0 };
+
+		VkCommandBufferBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		beginInfo.flags = 0;
+		beginInfo.pInheritanceInfo = nullptr;
+
+		if (vkBeginCommandBuffer(GetCurrentCommandBuffer(), &beginInfo) != VK_SUCCESS)
+			throw std::runtime_error("Failed to begin command buffer!");
+
+		VkRenderPassBeginInfo renderPassBeginInfo{};
+		renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		renderPassBeginInfo.renderPass = pSwapchain->GetRenderPass();
+		renderPassBeginInfo.framebuffer = pSwapchain->GetSwapchainFrameBuffers()[m_imageIndex];
+		renderPassBeginInfo.renderArea.offset = { 0, 0 };
+		renderPassBeginInfo.renderArea.extent = pSwapchain->GetSwapchainExtent();
+		renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+		renderPassBeginInfo.pClearValues = clearValues.data();
+
+		vkCmdBeginRenderPass(GetCurrentCommandBuffer(),
+			&renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+	}
+
+	void Renderer::endFlush()
+	{
+		for (RenderCmd* renderCmd : m_renderCmds)
+			if (renderCmd != nullptr)
+				renderCmd->Execute();
+
+		vkCmdEndRenderPass(GetCurrentCommandBuffer());
+
+		if (vkEndCommandBuffer(GetCurrentCommandBuffer()) != VK_SUCCESS)
+			throw std::runtime_error("Failed to end command buffer");
 	}
 
 	void Renderer::createCommandBuffers()

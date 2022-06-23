@@ -515,17 +515,13 @@ namespace ZVK
 			float dotY = Vec3::DotProduct(yAxis, eye);
 			float dotZ = Vec3::DotProduct(zAxis, eye);
 
-			Matrix4x4 result;
-
-			result =
+			return
 			{
 				xAxis.x, yAxis.x, zAxis.x, 0.f,
 				xAxis.y, yAxis.y, zAxis.y, 0.f,
 				xAxis.z, yAxis.z, zAxis.z, 0.f,
 				-dotX  , -dotY  , -dotZ  , 1.f
 			};
-
-			return result;
 		}
 
 		static Matrix4x4 LookAtRH(const Vec3& eye, const Vec3& at, const Vec3& up)
@@ -540,15 +536,13 @@ namespace ZVK
 
 			Matrix4x4 result;
 
-			result =
+			return
 			{
 				xAxis.x, yAxis.x, -zAxis.x, 0.f,
 				xAxis.y, yAxis.y, -zAxis.y, 0.f,
 				xAxis.z, yAxis.z, -zAxis.z, 0.f,
 				-dotX  , -dotY  , -dotZ   , 1.f
 			};
-
-			return result;
 		}
 
 		static Matrix4x4 LookAt(const Vec3& eye, const Vec3& at, const Vec3& up, bool isRightHand = false)

@@ -1,41 +1,32 @@
-#include "Headers/SpriteRenderer.h"
+#include "../../../Headers/Render/Systems/SpriteRenderer.h"
 
 #include <iostream>
 #include <stdexcept>
 
-#define USE_SPRITE_PIPELINE
-
 #include <cassert>
+
+#define MAX_QUAD_COUNT 880
+#define MAX_VERTEX_COUNT MAX_QUAD_COUNT * 4
+#define MAX_INDEX_COUNT MAX_QUAD_COUNT * 6
 
 namespace ZVK
 {
-	struct SpriteSort
-	{
-		uint32_t errorTextureID;
 
-		bool operator()(Sprite& v1, Sprite& v2)
-		{
-			uint32_t v1ID = (v1.GetTexture() == nullptr) ? errorTextureID : v1.GetTextureID();
-			uint32_t v2ID = (v2.GetTexture() == nullptr) ? errorTextureID : v2.GetTextureID();
-
-			return v1ID < v2ID;
-		}
-	};
-
-	SpriteRenderer::SpriteRenderer(SpritePipeline* pPipeline, const std::string& errorTexturePath)
-		: p_pipeline(pPipeline), m_clearColour(0.f, 0.f, 0.f, 1.f)
+	SpriteRenderer::SpriteRenderer(Renderer& renderer,
+		SpritePipeline* pPipeline, const std::string& errorTexturePath)
+		: m_renderer(renderer), p_pipeline(pPipeline)
 	{
 		init(errorTexturePath);
 	}
 
-	SpriteRenderer::SpriteRenderer(const std::string& errorTexturePath, const std::string& vertPath,
-		const std::string& fragPath) 
-		:m_clearColour(0.f, 0.f, 0.f, 1.f)
+	SpriteRenderer::SpriteRenderer(Renderer& renderer, const std::string& errorTexturePath,
+		const std::string& vertPath, const std::string& fragPath) :
+		m_renderer(renderer)
 	{
 		try
 		{
 			p_pipeline = new SpritePipeline(vertPath, fragPath);
-		} 
+		}
 		catch (std::exception e)
 		{
 			std::cout << "Error creating pipeline: " << e.what() << std::endl;
@@ -49,67 +40,40 @@ namespace ZVK
 	{
 		ZDevice* pDevice = Core::GetCore().GetDevice();
 
-		vkDestroyBuffer(pDevice->GetDevice(), m_indexBuffer, nullptr);
-		vkFreeMemory(pDevice->GetDevice(), m_indexMemory, nullptr);
-
-		vkDestroyBuffer(pDevice->GetDevice(), m_vertexBuffer, nullptr);
-		vkFreeMemory(pDevice->GetDevice(), m_vertexMemory, nullptr);
-
 		vkDestroyBuffer(pDevice->GetDevice(), m_uniformBuffer, nullptr);
 		vkFreeMemory(pDevice->GetDevice(), m_uniformMemory, nullptr);
 
-		if (m_descriptorInfoCreated)
+		for (auto cmd : m_uploadUpdatedVerticesCmds)
 		{
-			vkFreeDescriptorSets(pDevice->GetDevice(), p_pipeline->GetDescriptorPool(),
-				1, &m_descriptorSet);
-
-			m_descriptorImageInfos.clear();
-		}
-		m_vertexBufferCreated = false;
-
-		if (m_canDeletePipeline)
-		{
-			if (p_pipeline)
+			m_renderer.RemoveUpdateVertexCmd(cmd);
+			if (cmd)
 			{
-				delete p_pipeline;
-				p_pipeline = nullptr;
+				delete cmd;
+				cmd = nullptr;
 			}
 		}
+
+		for (auto cmd : m_spriteRendererCmds)
+		{
+			m_renderer.RemoveRenderCmd(cmd);
+			if (cmd)
+			{
+				delete cmd;
+				cmd = nullptr;
+			}
+		}
+
+		for (auto& renderData : m_renderInfos)
+		{
+			vkDestroyBuffer(pDevice->GetDevice(), renderData.Buffer, nullptr);
+			vkFreeMemory(pDevice->GetDevice(), renderData.BufferMemory, nullptr);
+		}
+
+		vkDestroySampler(pDevice->GetDevice(), m_sampler, nullptr);
 	}
 
 	void SpriteRenderer::init(const std::string& errorTexturePath)
 	{
-		m_vertices.reserve(MAX_VERTEX_COUNT);
-		m_indices.resize(MAX_INDEX_COUNT);
-
-		m_inUseTextures.reserve(Core::GetCore().GetMaxTextureSlots());
-		m_descriptorImageInfos.reserve(Core::GetCore().GetMaxTextureSlots());
-
-		SpriteVertex vertex;
-		vertex.pos = { 32, 32, 0 };
-		vertex.colour = { 1.f, 1.f, 1.f };
-		vertex.texCoord = { 0.f, 0.f };
-		vertex.texIndex = 0;
-
-		m_vertices.push_back(vertex);
-
-		createVertexBuffer();
-
-		uint32_t offset = 0;
-		for (size_t i = 0; i < MAX_INDEX_COUNT; i += 6)
-		{
-			m_indices[i] = offset;
-			m_indices[i + 1] = 1 + offset;
-			m_indices[i + 2] = 2 + offset;
-
-			m_indices[i + 3] = 2 + offset;
-			m_indices[i + 4] = 3 + offset;
-			m_indices[i + 5] = offset;
-
-			offset += 4;
-		}
-
-		createIndexBuffer();
 		createUniformBuffer();
 
 		p_errorTexture = std::make_shared<Texture2D>(errorTexturePath);
@@ -119,297 +83,437 @@ namespace ZVK
 
 		Core::GetCore().GetSwapchainRecreateDispatcher().Attach(m_swapchainRecreateEvent);
 
-		// Delete the vertex... it's buffer and memory
-		// The Vertex buffer was only a temp variable to not get the weird bug
-		// The bug is probably due to the size of the index buffer
+		// Create sampler
+		{
+			VkSamplerCreateInfo samplerInfo{};
+			VkPhysicalDeviceProperties physicalDeviceProperties{};
 
-		m_vertices.clear();
+			uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(32, 32)))) + 1;
 
-		vkDestroyBuffer(Core::GetCore().GetDevice()->GetDevice(), m_vertexBuffer, nullptr);
-		vkFreeMemory(Core::GetCore().GetDevice()->GetDevice(), m_vertexMemory, nullptr);
+			vkGetPhysicalDeviceProperties(Core::GetCore().GetDevice()->GetPhysicalDevice(),
+				&physicalDeviceProperties);
 
-		m_vertexBufferCreated = false;
+			samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+			samplerInfo.magFilter = VK_FILTER_NEAREST;
+			samplerInfo.minFilter = VK_FILTER_NEAREST;
+
+			samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+			samplerInfo.anisotropyEnable = VK_TRUE;
+			samplerInfo.maxAnisotropy = physicalDeviceProperties.limits.maxSamplerAnisotropy;
+			samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+			samplerInfo.unnormalizedCoordinates = VK_FALSE;
+
+			samplerInfo.compareEnable = VK_FALSE;
+			samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+			samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+			samplerInfo.minLod = 0.f;
+			samplerInfo.maxLod = static_cast<float>(mipLevels);
+			samplerInfo.mipLodBias = 0.f;
+
+			if (vkCreateSampler(Core::GetCore().GetDevice()->GetDevice(),
+				&samplerInfo, nullptr, &m_sampler) != VK_SUCCESS)
+				throw std::runtime_error("Failed to create texture sampler!");
+
+			VkDescriptorImageInfo textureImageInfo{};
+			textureImageInfo.sampler = m_sampler;
+			textureImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+			m_samplerImageInfo = textureImageInfo;
+		}
+
+		// Set Default Viewport and Scissor Rect Extent
+		{
+			m_viewportInfo = Vec4{
+				0.f,
+				0.f,
+				static_cast<float>(Core::GetCore().GetSwapchain()->GetSwapchainExtent().width),
+				static_cast<float>(Core::GetCore().GetSwapchain()->GetSwapchainExtent().height)
+			};
+
+			m_scissorExtent = Core::GetCore().GetSwapchain()->GetSwapchainExtent();
+		}
+
+		m_textureData = std::make_unique<TextureData>(TextureData{});
+
+		allocateDescriptorInfo();
 	}
 
-	void SpriteRenderer::Draw(Renderer& renderer, std::vector<Sprite>& sprites, const Camera& cam, 
-		bool canUpdateVertexBuffer, bool canSortSprites)
+	void SpriteRenderer::Draw(std::vector<std::shared_ptr<Sprite>>& sprites, const Mat4& pv,
+		const bool canUpdateVertexBuffer)
 	{
 		if (sprites.empty()) return;
-	
-		// I'll probably work ona  general flushing system sometime....
-		if (sprites.size() > MAX_QUAD_COUNT)
-			throw std::runtime_error("Sprite size is greater than the quad count( " + 
-				std::to_string(MAX_QUAD_COUNT) + ")!");
 
-		if(canUpdateVertexBuffer && m_vertexBufferCreated)
-			updateVertexBuffer(sprites);
+		auto spriteList = m_loadedLists.find(&sprites);
+		bool isFound = false;
 
-		if (m_swapchainRecreated)
+		if (spriteList == m_loadedLists.end())
 		{
-			allocateDescriptorInfo();
-			updateDescriptorWrites();
-			m_swapchainRecreated = false;
+			m_loadedLists[&sprites] = { (uint32_t)sprites.size(), m_listCount++ };
+			spriteList = m_loadedLists.find(&sprites);
 		}
-
-		if (sprites.size() != m_spriteCount)
+		else if (spriteList->second.ListSize != (uint32_t)sprites.size())
 		{
-			if (canSortSprites)
+			// This is inefficient but it works
+			for (SpriteRendererCmd* rCmd : m_spriteRendererCmds)
 			{
-				SpriteSort spriteSort = { p_errorTexture->GetID() };
-				std::sort(sprites.begin(), sprites.end(), spriteSort);
-			}
+				m_renderer.RemoveRenderCmd(rCmd);
 
-			populateVertices(sprites);
-			allocateDescriptorInfo();
-			updateDescriptorWrites();
-		}
-
-		updateUBO(cam);
-
-#ifdef FLUSH_MAX_TEXTURES
-		/* We need to change our textures per flush(draw indexed command)
-		* I don't recommend using FLUSH_MAX_TEXTURES because the descriptor sets are updated
-		* before the command buffer ends...
-		*/
-		if (Core::GetCore().Get2DTextures().size() > Core::GetCore().GetMaxTextureSlots())
-		{
-			// Some lines would be long without this, so this is just the texture size
-			size_t tSize = Core::GetCore().Get2DTextures().size();
-
-			// Change all the first max textures that we are going to be using
-			for (size_t i = 0; i < Core::GetCore().GetMaxTextureSlots(); ++i)
-				m_inUseTextures[i] = Core::GetCore().Get2DTextures()[i];
-			
-			// Change the descriptorInfo, tbh the line above could probably be removed 
-			// and we could just use the 2D texture vector in core, but I'm lazy
-			for (uint32_t i = 0; i < m_inUseTextures.size(); ++i)
-			{
-				VkDescriptorImageInfo imageInfo{};
-				imageInfo.sampler = m_inUseTextures[i]->GetSampler();
-				imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				imageInfo.imageView = m_inUseTextures[i]->GetImageView();
-
-				m_descriptorImageInfos[i] = imageInfo;
-			}
-
-			updateDescriptorWrites();
-
-			beginFlush(renderer);
-
-			flush(renderer, static_cast<uint32_t>(m_indicesCount[0]));
-
-			int k = 1; // k allows us to know which set of indices to use
-			uint32_t firstIndex = 0; // First index tells us when to start drawing the next batch of indices
-
-			const uint32_t textureSlots = Core::GetCore().GetMaxTextureSlots();
-
-			// Loop through all textures and increase it by the max texture array size
-			for (size_t i = textureSlots; i < Core::GetCore().Get2DTextures().size(); i += textureSlots)
-			{
-				firstIndex += m_indicesCount[k - 1]; 
-				
-				// If the end batch doesn't extend to the max texture array size we get the remaining amount
-				size_t size = (i + textureSlots > tSize)? tSize - i : textureSlots;
-
-				// Update the textures we're using, probably don't need the two lines below this comment
-				for (size_t j = 0; j < size; ++j)
-					m_inUseTextures[j] = Core::GetCore().Get2DTextures()[i + j];
-				
-				for (uint32_t i = 0; i < m_inUseTextures.size(); ++i)
+				if (rCmd != nullptr)
 				{
-					VkDescriptorImageInfo imageInfo{};
-					imageInfo.sampler = m_inUseTextures[i]->GetSampler();
-					imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-					imageInfo.imageView = m_inUseTextures[i]->GetImageView();
-
-					m_descriptorImageInfos[i] = imageInfo;
+					delete rCmd;
+					rCmd = nullptr;
 				}
-				updateDescriptorWrites();
-
-				flush(renderer, m_indicesCount[k], firstIndex);
-				++k;
 			}
-			endFlush(renderer);
+
+			for (UploadUpdatedSpriteVerticesCmd* updateVCmd : m_uploadUpdatedVerticesCmds)
+			{
+				m_renderer.RemoveUpdateVertexCmd(updateVCmd);
+
+				if (updateVCmd != nullptr)
+				{
+					delete updateVCmd;
+					updateVCmd = nullptr;
+				}
+			}
+
+			for (auto& renderData : m_renderInfos)
+			{
+				vkDestroyBuffer(Core::GetCore().GetDevice()->GetDevice(), renderData.Buffer, nullptr);
+				vkFreeMemory(Core::GetCore().GetDevice()->GetDevice(), renderData.BufferMemory, nullptr);
+			}
+
+			changedListIndex = spriteList->second.Index;
+
+			m_spriteRendererCmds.clear();
+			m_uploadUpdatedVerticesCmds.clear();
+			m_renderInfos.clear();
+			m_updateVerticesCmds.clear();
+			m_textureData->DescriptorImageInfos.clear();
+			m_textureData->BindingInfos.clear();
+			m_textureData->TextureCount = 0;
+			m_listCount = 0;
+			spriteList->second.ListSize = (uint32_t)sprites.size();
+
+			for (auto& [key, val] : m_loadedLists)
+				val.IsListAdded = false;
+
 			return;
 		}
-#else
-		assert(Core::GetCore().Get2DTextures().size() < Core::GetCore().GetMaxTextureSlots() &&
-		"To use more than the max texture amount add: FLUSH_MAX_TEXTURES as a preprocessor definition");
-#endif
-		
-		draw(renderer);
+		else if (spriteList->second.IsListAdded == true)
+			isFound = true;
+
+		if (changedListIndex >= 0 && spriteList->second.Index > changedListIndex)
+			return;
+		else if (spriteList->second.Index == changedListIndex)
+			changedListIndex = -1;
+
+		if (!isFound)
+		{
+			createTextureData(sprites);
+
+			// Add new list to the render data 
+			// Create a new one if we go over the max quad count
+			if (!m_renderInfos.empty() &&
+				m_renderInfos[m_renderInfos.size() - 1].SpriteCount < MAX_QUAD_COUNT)
+			{
+				uint32_t renderIndex = (uint32_t)m_renderInfos.size() - 1;
+
+				RenderData& rData = m_renderInfos[renderIndex];
+
+				uint32_t spriteIndex = 0;
+
+				if (rData.SpriteCount + (uint32_t)sprites.size() > MAX_QUAD_COUNT)
+				{
+					// Make sure we caculate for a list size greater than MAX_QUAD_COUNT
+					// We also need to account for a list size less than MAX_QUAD_COUNT
+
+					std::vector<std::shared_ptr<Sprite>> tempSprites;
+
+					uint32_t amountAdded = 0;
+					for (size_t i = 0; rData.SpriteCount + i < MAX_QUAD_COUNT; ++i)
+					{
+						tempSprites.push_back(sprites[i]);
+						++amountAdded;
+					}
+
+					rData.SpriteInfos.push_back(SpriteData{});
+					spriteIndex = (uint32_t)m_renderInfos[renderIndex].SpriteInfos.size() - 1;
+
+					rData.SpriteInfos[spriteIndex].CanUpdateVertices = canUpdateVertexBuffer;
+
+					populateVertices(tempSprites, renderIndex, spriteIndex);
+
+					if (canUpdateVertexBuffer)
+					{
+						std::copy(tempSprites.begin(), tempSprites.end(),
+							std::back_inserter(rData.Sprites));
+					}
+
+					rData.SpriteCount += (uint32_t)tempSprites.size();
+
+					std::vector<std::shared_ptr<Sprite>>
+						newSprites(std::next(sprites.begin() + amountAdded - 1), sprites.end());
+
+					SpriteRendererCmd* cmd = new SpriteRendererCmd(this, 
+						(uint32_t)sprites.size() * 6, renderIndex, spriteIndex);
+					m_spriteRendererCmds.push_back(cmd);
+					m_renderer.AddRenderCmd(cmd);
+
+					if (amountAdded != sprites.size())
+						drawRecursive(newSprites, canUpdateVertexBuffer);
+				}
+				else
+				{
+					rData.SpriteInfos.push_back(SpriteData{});
+
+					spriteIndex = (uint32_t)m_renderInfos[renderIndex].SpriteInfos.size() - 1;
+
+					populateVertices(sprites, renderIndex, spriteIndex);
+
+					if (canUpdateVertexBuffer)
+						std::copy(sprites.begin(), sprites.end(), 
+							std::back_inserter(rData.Sprites));
+
+					rData.SpriteInfos[spriteIndex].CanUpdateVertices = canUpdateVertexBuffer;
+
+					rData.SpriteCount += (uint32_t)sprites.size();
+
+					SpriteRendererCmd* cmd = new SpriteRendererCmd(this,
+						(uint32_t)sprites.size() * 6, renderIndex, spriteIndex);
+					m_spriteRendererCmds.push_back(cmd);
+					m_renderer.AddRenderCmd(cmd);
+				}
+			}
+			else
+				drawRecursive(sprites, canUpdateVertexBuffer);
+
+			for (uint32_t i = 0; i < (uint32_t)m_renderInfos.size(); ++i)
+				createBuffer(i);
+
+			updateDescriptorWrites();
+
+			spriteList->second.IsListAdded = true;
+		}
+
+		for (auto updateVCmd : m_updateVerticesCmds)
+			updateVCmd->Execute();
+
+		updateUBO(pv);
 	}
 
-	void SpriteRenderer::draw(Renderer& renderer)
+	void SpriteRenderer::Draw(std::vector<std::shared_ptr<Sprite>>& sprites, const Camera& cam,
+		const bool canUpdateVertexBuffer)
+	{
+		Draw(sprites, cam.GetPV(), canUpdateVertexBuffer);
+	}
+
+	void SpriteRenderer::drawRecursive(std::vector<std::shared_ptr<Sprite>>& sprites, 
+		bool canUpdateVertexBuffer)
+	{
+		if (sprites.size() == 0) return;
+
+		// Create render data for the shape list 
+		// and create more if we go past the max quad count
+		m_renderInfos.push_back(RenderData{});
+		size_t index = m_renderInfos.size() - 1;
+
+		size_t spritesSize = (sprites.size() > MAX_QUAD_COUNT) ? MAX_QUAD_COUNT : sprites.size();
+
+		std::vector<std::shared_ptr<Sprite>> tempSprites(sprites.begin(), 
+			std::next(sprites.begin() + spritesSize - 1));
+
+		m_renderInfos[index].SpriteInfos.push_back(SpriteData{});
+		populateVertices(tempSprites, (uint32_t)index, 0);
+
+		SpriteRendererCmd* cmd = new SpriteRendererCmd(this, (uint32_t)sprites.size() * 6,
+			(uint32_t)index, 0);
+		m_spriteRendererCmds.push_back(cmd);
+		m_renderer.AddRenderCmd(cmd);
+
+		m_renderInfos[index].SpriteCount = (uint32_t)spritesSize;
+
+		if (canUpdateVertexBuffer)
+		{
+			m_renderInfos[index].Sprites.resize(spritesSize);
+			m_renderInfos[index].Sprites.assign(tempSprites.begin(), tempSprites.end());
+
+			m_renderInfos[index].SpriteInfos[0].CanUpdateVertices = true;
+
+			m_updateVerticesCmds.emplace_back(std::make_unique<UpdateVerticesCmd>(*this,
+				m_renderInfos[index].Sprites, (uint32_t)index));
+		}
+
+		UploadUpdatedSpriteVerticesCmd* uploadUpdatedCmd =
+			new UploadUpdatedSpriteVerticesCmd(this, (uint32_t)index);
+		m_uploadUpdatedVerticesCmds.push_back(uploadUpdatedCmd);
+		m_renderer.AddUpdateVertexCmd(uploadUpdatedCmd);
+
+		if (sprites.size() < MAX_QUAD_COUNT)
+			return;
+
+		std::vector<std::shared_ptr<Sprite>> newSprites;
+		newSprites.reserve(sprites.size() - MAX_QUAD_COUNT);
+		for (size_t i = MAX_QUAD_COUNT; i < sprites.size(); ++i)
+			newSprites.push_back(sprites[i]);
+
+		drawRecursive(newSprites, canUpdateVertexBuffer);
+	}
+
+	void SpriteRenderer::draw(uint32_t indexCount, uint32_t renderDataIndex, 
+		uint32_t spriteDataIndex)
 	{
 		ZSwapchain* pSwapchain = Core::GetCore().GetSwapchain();
 
-		std::array<VkClearValue, 2> clearValues{};
-		clearValues[0].color = 
-		{ { m_clearColour.x, m_clearColour.y, m_clearColour.z, m_clearColour.w } };
-		clearValues[1].depthStencil = { 1.f, 0 };
-
-		VkCommandBufferBeginInfo beginInfo{};
-		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		beginInfo.flags = 0;
-		beginInfo.pInheritanceInfo = nullptr;
-
-		if (vkBeginCommandBuffer(renderer.GetCurrentCommandBuffer(), &beginInfo) != VK_SUCCESS)
-			throw std::runtime_error("Failed to begin command buffer!");
-
-		VkRenderPassBeginInfo renderPassBeginInfo{};
-		renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-		renderPassBeginInfo.renderPass = p_pipeline->GetRenderPass();
-		renderPassBeginInfo.framebuffer = p_pipeline->GetSwapchainFrameBuffers()[renderer.GetImageIndex()];
-		renderPassBeginInfo.renderArea.offset = { 0, 0 };
-		renderPassBeginInfo.renderArea.extent = pSwapchain->GetSwapchainExtent();
-		renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-		renderPassBeginInfo.pClearValues = clearValues.data();
-
-		vkCmdBeginRenderPass(renderer.GetCurrentCommandBuffer(),
-			&renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-
+		RenderData& rData = m_renderInfos[renderDataIndex];
+		SpriteData& sData = rData.SpriteInfos[spriteDataIndex];
+		
 		VkViewport viewport{};
-		viewport.x = 0.f;
-		viewport.y = 0.f;
-		viewport.width = static_cast<float>(pSwapchain->GetSwapchainExtent().width);
-		viewport.height = static_cast<float>(pSwapchain->GetSwapchainExtent().height);
+		viewport.x = m_viewportInfo.x;
+		viewport.y = m_viewportInfo.y;
+		viewport.width = m_viewportInfo.z;
+		viewport.height = m_viewportInfo.w;
 		viewport.minDepth = 0.f;
 		viewport.maxDepth = 1.f;
 
 		VkRect2D scissor{};
-		scissor.offset = { 0, 0 };
-		scissor.extent = pSwapchain->GetSwapchainExtent();
-		vkCmdSetViewport(renderer.GetCurrentCommandBuffer(), 0, 1, &viewport);
-		vkCmdSetScissor(renderer.GetCurrentCommandBuffer(), 0, 1, &scissor);
+		scissor.offset = { m_scissorOffset.x, m_scissorOffset.y };
+		scissor.extent = m_scissorExtent;
 
-		vkCmdBindPipeline(renderer.GetCurrentCommandBuffer(),
+		vkCmdSetViewport(m_renderer.GetCurrentCommandBuffer(), 0, 1, &viewport);
+		vkCmdSetScissor(m_renderer.GetCurrentCommandBuffer(), 0, 1, &scissor);
+
+		vkCmdBindPipeline(m_renderer.GetCurrentCommandBuffer(),
 			VK_PIPELINE_BIND_POINT_GRAPHICS, p_pipeline->GetPipeline());
 
-		vkCmdBindDescriptorSets(renderer.GetCurrentCommandBuffer(),
+		vkCmdBindDescriptorSets(m_renderer.GetCurrentCommandBuffer(),
 			VK_PIPELINE_BIND_POINT_GRAPHICS, p_pipeline->GetPipelineLayout(),
-			0, 1, &m_descriptorSet, 0, 0);
+			0, 1, &m_descriptorSet,
+			0, nullptr);
 
-		VkBuffer vertexBuffers[] = { m_vertexBuffer };
-		VkDeviceSize offsets[] = { 0 };
-		vkCmdBindVertexBuffers(renderer.GetCurrentCommandBuffer(), 0, 1, vertexBuffers, offsets);
-		vkCmdBindIndexBuffer(renderer.GetCurrentCommandBuffer(), m_indexBuffer,
-			0, VK_INDEX_TYPE_UINT32);
+		VkBuffer vertexBuffers[] = { rData.Buffer };
+		VkDeviceSize offsets[] = { sData.StartVertex };
 
-		vkCmdDrawIndexed(renderer.GetCurrentCommandBuffer(),
-			static_cast<uint32_t>(m_indices.size()), 1, 0, 0, 0);
+		vkCmdBindVertexBuffers(m_renderer.GetCurrentCommandBuffer(), 0, 1, vertexBuffers, offsets);
 
-		vkCmdEndRenderPass(renderer.GetCurrentCommandBuffer());
+		vkCmdBindIndexBuffer(m_renderer.GetCurrentCommandBuffer(),
+			rData.Buffer, sData.StartIndex,
+			VK_INDEX_TYPE_UINT32);
 
-		if (vkEndCommandBuffer(renderer.GetCurrentCommandBuffer()) != VK_SUCCESS)
-			throw std::runtime_error("Failed to end command buffer");
+		vkCmdDrawIndexed(m_renderer.GetCurrentCommandBuffer(), 
+			(uint32_t)sData.Indices.size(), 1, 0, 0, 0);
 	}
 
-	void SpriteRenderer::beginFlush(Renderer& renderer)
+	void SpriteRenderer::createTextureData(std::vector<std::shared_ptr<Sprite>>& sprites)
 	{
-		ZSwapchain* pSwapchain = Core::GetCore().GetSwapchain();
+		if (sprites.empty()) return;
 
-		// updateUBO();
+		std::vector<std::pair<uint32_t, uint32_t>> existingTextures;
+		std::vector<std::shared_ptr<Texture2D>> newTextures;
+		
+		newTextures.reserve(5);
 
-		std::array<VkClearValue, 2> clearValues{};
-		clearValues[0].color = { { 0.f, 0.f, 0.f, 1.f } };
-		clearValues[1].depthStencil = { 1.f, 0 };
+		uint32_t maxTextureSlots = Core::GetCore().GetMaxTextureSlots();
 
-		VkCommandBufferBeginInfo beginInfo{};
-		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		beginInfo.flags = 0;
-		beginInfo.pInheritanceInfo = nullptr;
-
-		if (vkBeginCommandBuffer(renderer.GetCurrentCommandBuffer(), &beginInfo) != VK_SUCCESS)
-			throw std::runtime_error("Failed to begin command buffer!");
-
-		VkRenderPassBeginInfo renderPassBeginInfo{};
-		renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-		renderPassBeginInfo.renderPass = p_pipeline->GetRenderPass();
-		renderPassBeginInfo.framebuffer = pSwapchain->GetSwapchainFrameBuffers()[renderer.GetImageIndex()];
-		renderPassBeginInfo.renderArea.offset = { 0, 0 };
-		renderPassBeginInfo.renderArea.extent = pSwapchain->GetSwapchainExtent();
-		renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-		renderPassBeginInfo.pClearValues = clearValues.data();
-
-		vkCmdBeginRenderPass(renderer.GetCurrentCommandBuffer(),
-			&renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-	}
-
-	void SpriteRenderer::flush(Renderer& renderer, uint32_t indexCount, uint32_t firstIndex)
-	{
-		vkCmdBindPipeline(renderer.GetCurrentCommandBuffer(),
-			VK_PIPELINE_BIND_POINT_GRAPHICS, p_pipeline->GetPipeline());
-
-		// Maybe use different discriptor sets??
-		vkCmdBindDescriptorSets(renderer.GetCurrentCommandBuffer(),
-			VK_PIPELINE_BIND_POINT_GRAPHICS, p_pipeline->GetPipelineLayout(),
-			0, 1, &m_descriptorSet, 0, 0);
-
-		VkBuffer vertexBuffers[] = { m_vertexBuffer };
-		VkDeviceSize offsets[] = { 0 };
-		vkCmdBindVertexBuffers(renderer.GetCurrentCommandBuffer(), 0, 1, vertexBuffers, offsets);
-		vkCmdBindIndexBuffer(renderer.GetCurrentCommandBuffer(), m_indexBuffer,
-			0, VK_INDEX_TYPE_UINT32);
-
-		vkCmdDrawIndexed(renderer.GetCurrentCommandBuffer(), indexCount, 1, firstIndex, 0, 0);
-	}
-
-	void SpriteRenderer::endFlush(Renderer& renderer)
-	{
-		vkCmdEndRenderPass(renderer.GetCurrentCommandBuffer());
-
-		if (vkEndCommandBuffer(renderer.GetCurrentCommandBuffer()) != VK_SUCCESS)
-			throw std::runtime_error("Failed to end command buffer");
-	}
-
-	void SpriteRenderer::updateUBO(const Camera& cam)
-	{
-		ZDevice* pDevice = Core::GetCore().GetDevice();
-
-		UniformBufferObject ubo{};
-		ubo.pv = cam.GetPV();
-
-		void* data;
-		vkMapMemory(pDevice->GetDevice(), m_uniformMemory, 0, sizeof(ubo), 0, &data);
-		memcpy(data, &ubo, sizeof(ubo));
-		vkUnmapMemory(pDevice->GetDevice(), m_uniformMemory);
-	}
-
-	void SpriteRenderer::populateVertices(std::vector<Sprite>& sprites)
-	{
-		m_spriteCount = 0;
-
-		if (m_vertexBufferCreated)
+		if (m_textureData->TextureCount == 0)
 		{
-			vkDestroyBuffer(Core::GetCore().GetDevice()->GetDevice(), m_vertexBuffer, nullptr);
-			vkFreeMemory(Core::GetCore().GetDevice()->GetDevice(), m_vertexMemory, nullptr);
+			VkDescriptorImageInfo errorImageInfo{};
+			errorImageInfo.sampler = p_errorTexture->GetSampler();
+			errorImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			errorImageInfo.imageView = p_errorTexture->GetImageView();
 
-			m_vertices.clear();
-			m_inUseTextures.clear();
+			m_textureData->DescriptorImageInfos.push_back(errorImageInfo);
+			m_textureData->BindingInfos.emplace_back(std::make_pair(p_errorTexture->GetID(), 0));
+			++m_textureData->TextureCount;
 		}
 
-		uint32_t errorID = p_errorTexture->GetRangedID();
+		std::copy(m_textureData->BindingInfos.begin(), m_textureData->BindingInfos.end(),
+			std::back_inserter(existingTextures));
 
-#ifdef FLUSH_MAX_TEXTURES
-		m_indicesCount.clear();
-		std::vector<uint32_t> newIndicesFlush;
-		uint32_t indicesIndex = 0;
-#endif
-
-		for (Sprite& sprite : sprites)
+		// Figure out what textures have and haven't been added
+		for (size_t i = 0; i < sprites.size(); ++i)
 		{
-			float x = sprite.GetX();
-			float y = sprite.GetY();
-			float z = sprite.GetZ();
-			float width = sprite.GetWidth();
-			float height = sprite.GetHeight();
-			float depth = sprite.GetDepth();
+			if (!sprites[i]->GetTexture())
+				continue;
 
-			int rangedID = (sprite.GetTexture() != nullptr) ? sprite.GetTextureRangedID() : errorID;
+			uint32_t spriteID = sprites[i]->GetTextureID();
 
-			bool isScaled = sprite.GetScaleX() != 1.f || sprite.GetScaleY() != 1.f|| sprite.GetScaleZ() != 1.f;
-			bool isRotated = sprite.GetRotationX() != 0.f || sprite.GetRotationY() != 0.f || sprite.GetRotationZ() != 0.f;
+			bool isFound = false;
+			for (auto& [textureID, slotID] : existingTextures)
+			{
+				if (spriteID == textureID)
+				{
+					isFound = true;
+					break;
+				}
+			}
+
+			if (isFound)
+				continue;
+
+			existingTextures.push_back(std::make_pair(spriteID, 0));
+
+			newTextures.push_back(sprites[i]->GetTexture());
+
+			if ((uint32_t)newTextures.size() + m_textureData->TextureCount > maxTextureSlots)
+				throw std::runtime_error("Out of texture slots, consider using a texture atlas!");
+		}
+
+		// Add new textures
+		for(auto newTexture : newTextures)
+		{
+			VkDescriptorImageInfo textureImageInfo{};
+			textureImageInfo.sampler = newTexture->GetSampler();
+			textureImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			textureImageInfo.imageView = newTexture->GetImageView();
+
+			m_textureData->DescriptorImageInfos.push_back(textureImageInfo);
+			m_textureData->BindingInfos.emplace_back(std::make_pair(
+				newTexture->GetID(),
+				(uint32_t)m_textureData->DescriptorImageInfos.size() - 1
+			));
+			++m_textureData->TextureCount;
+		}
+	}
+
+	void SpriteRenderer::populateVertices(std::vector<std::shared_ptr<Sprite>>& sprites, 
+		uint32_t renderDataIndex, uint32_t spriteDataIndex)
+	{
+		RenderData& rData = m_renderInfos[renderDataIndex];
+		SpriteData& sData = rData.SpriteInfos[spriteDataIndex];
+
+		rData.TotalVerticeSize = 0;
+
+		for (std::shared_ptr<Sprite> sprite : sprites)
+		{
+			float width = sprite->GetWidth();
+			float height = sprite->GetHeight();
+			float depth = sprite->GetDepth();
+			float x = sprite->GetX();
+			float y = sprite->GetY();
+			float z = sprite->GetZ();
+
+			int rangedID = 0;
+			
+			if (sprite->GetTexture())
+			{
+				for (auto& [textureID, slotID] : m_textureData->BindingInfos)
+				{
+					if (textureID == sprite->GetTextureID())
+					{
+						rangedID = slotID;
+						break;
+					}
+				}
+			}
+
+			bool isScaled = sprite->GetScaleX() != 1.f || sprite->GetScaleY() != 1.f || sprite->GetScaleZ() != 1.f;
+			bool isRotated = sprite->GetRotationX() != 0.f || sprite->GetRotationY() != 0.f || sprite->GetRotationZ() != 0.f;
+
+			bool isZRotated = sprite->GetRotationZ() > 0.f;
 
 			Vec3 posBL(x, y, z + depth);
 			Vec3 posBR(x + width, y, z + depth);
@@ -418,25 +522,25 @@ namespace ZVK
 
 			if (isScaled || isRotated)
 			{
-				float halfW = sprite.GetWidth() / 2.f;
-				float halfH = sprite.GetHeight() / 2.f;
+				float halfW = width / 2.f;
+				float halfH = height / 2.f;
 
 				// Set positions to be the origin so we rotate around that
 				// We have to subtract by our sprite position because of our mvp
-				Vec2 tempTL((posTL.x - sprite.GetX()) - halfW, (posTL.y - sprite.GetY()) - halfH);
-				Vec2 tempTR((posTR.x - sprite.GetX()) - halfW, (posTR.y - sprite.GetY()) - halfH);
-				Vec2 tempBL((posBL.x - sprite.GetX()) - halfW, (posBL.y - sprite.GetY()) - halfH);
-				Vec2 tempBR((posBR.x - sprite.GetX()) - halfW, (posBR.y - sprite.GetY()) - halfH);
+				Vec2 tempTL((posTL.x - x) - halfW, (posTL.y - y) - halfH);
+				Vec2 tempTR((posTR.x - x) - halfW, (posTR.y - y) - halfH);
+				Vec2 tempBL((posBL.x - x) - halfW, (posBL.y - y) - halfH);
+				Vec2 tempBR((posBR.x - x) - halfW, (posBR.y - y) - halfH);
 
 				// Create our translation matrices
-				Mat4 scaleMat = Mat4::Scale(sprite.GetScaleX(), sprite.GetScaleY(), sprite.GetScaleZ());
-				Mat4 rotateXMat = Mat4::RotateX(sprite.GetRotationX());
-				Mat4 rotateYMat = Mat4::RotateY(sprite.GetRotationY());
-				Mat4 rotateZMat = Mat4::RotateZ(sprite.GetRotationZ());
+				Mat4 scaleMat = Mat4::Scale(sprite->GetScaleX(), sprite->GetScaleY(), sprite->GetScaleZ());
+				Mat4 rotateXMat = Mat4::RotateX(sprite->GetRotationX());
+				Mat4 rotateYMat = Mat4::RotateY(sprite->GetRotationY());
+				Mat4 rotateZMat = Mat4::RotateZ(sprite->GetRotationZ());
 
 				Mat4 translateMat = scaleMat * (rotateXMat * rotateYMat * rotateZMat);
 
-				// Scale and rotate the positions
+				// Rotate the positions
 				tempTR = translateMat * tempTR;
 				tempTL = translateMat * tempTL;
 				tempBL = translateMat * tempBL;
@@ -445,10 +549,10 @@ namespace ZVK
 				// Set the positions back to their original position 
 				// (doing it how we did will rotate around the center of the sprite)
 				// We also have to add back our subtracted sprite positions because of the mvp
-				posTR = Vec3((tempTR.x + sprite.GetX()) + halfW, (tempTR.y + sprite.GetY()) + halfH, posTR.z);
-				posTL = Vec3((tempTL.x + sprite.GetX()) + halfW, (tempTL.y + sprite.GetY()) + halfH, posTL.z);
-				posBL = Vec3((tempBL.x + sprite.GetX()) + halfW, (tempBL.y + sprite.GetY()) + halfH, posBL.z);
-				posBR = Vec3((tempBR.x + sprite.GetX()) + halfW, (tempBR.y + sprite.GetY()) + halfH, posBR.z);
+				posTR = Vec3((tempTR.x + x) + halfW, (tempTR.y + y) + halfH, posTR.z);
+				posTL = Vec3((tempTL.x + x) + halfW, (tempTL.y + y) + halfH, posTL.z);
+				posBL = Vec3((tempBL.x + x) + halfW, (tempBL.y + y) + halfH, posBL.z);
+				posBR = Vec3((tempBR.x + x) + halfW, (tempBR.y + y) + halfH, posBR.z);
 			}
 
 			SpriteVertex topRight;
@@ -456,101 +560,72 @@ namespace ZVK
 			SpriteVertex bottomLeft;
 			SpriteVertex bottomRight;
 
-			bottomLeft.pos = posBL;
-			bottomLeft.colour = sprite.GetColour();
-			bottomLeft.texCoord = { sprite.GetUVInfo().z, sprite.GetUVInfo().y };
-			bottomLeft.texIndex = rangedID;
-
-			bottomRight.pos = posBR;
-			bottomRight.colour = sprite.GetColour();
-			bottomRight.texCoord = { sprite.GetUVInfo().x, sprite.GetUVInfo().y };
-			bottomRight.texIndex = rangedID;
-
 			topRight.pos = posTR;
-			topRight.colour = sprite.GetColour();
-			topRight.texCoord = { sprite.GetUVInfo().x, sprite.GetUVInfo().w };
+			topRight.colour = sprite->GetColour();
+			topRight.texCoord = { sprite->GetUVInfo().x, sprite->GetUVInfo().w };
 			topRight.texIndex = rangedID;
 
 			topLeft.pos = posTL;
-			topLeft.colour = sprite.GetColour();
-			topLeft.texCoord = { sprite.GetUVInfo().z, sprite.GetUVInfo().w };
+			topLeft.colour = sprite->GetColour();
+			topLeft.texCoord = { sprite->GetUVInfo().z, sprite->GetUVInfo().w };
 			topLeft.texIndex = rangedID;
 
-			if (!sprite.GetTexture())
-				sprite.SetTexture(p_errorTexture);
+			bottomLeft.pos = posBL;
+			bottomLeft.colour = sprite->GetColour();
+			bottomLeft.texCoord = { sprite->GetUVInfo().z, sprite->GetUVInfo().y };
+			bottomLeft.texIndex = rangedID;
 
-			m_vertices.push_back(bottomLeft);
-			m_vertices.push_back(bottomRight);
-			m_vertices.push_back(topRight);
-			m_vertices.push_back(topLeft);
+			bottomRight.pos = posBR;
+			bottomRight.colour = sprite->GetColour();
+			bottomRight.texCoord = { sprite->GetUVInfo().x, sprite->GetUVInfo().y };
+			bottomRight.texIndex = rangedID;
 
-			++m_spriteCount;
-			
-#ifdef FLUSH_MAX_TEXTURES
-			// Figure out how many indices we have per flush
-			// There is a bug I'm too lazy to fix and that is if no sprite except the first has a rangedIndex of 0
+			if (!sprite->GetTexture())
+				sprite->SetTexture(p_errorTexture);
 
-			// If we have no indices add one
-			if (m_indicesCount.empty())
-			{
-				newIndicesFlush.push_back(sprite.GetTextureID());
-				m_indicesCount.push_back(0);
-			}
-			
-			// Figure out if we have reached the first set of sprites to draw
-			bool isNewFlush = true;
-			for (uint32_t i : newIndicesFlush)
-			{
-				if (rangedID != 0 || sprite.GetTextureID() == i)
-					isNewFlush = false;
-			}
-
-			// If we have a new set of sprites to draw to our two lists and increase our index
-			if (isNewFlush)
-			{
-				m_indicesCount.push_back(0);
-				newIndicesFlush.push_back(sprite.GetTextureID());
-				++indicesIndex;
-			}
-
-			// If the list is not empty add 6 indices to whatever index we are on
-			if (!m_indicesCount.empty())
-				m_indicesCount[indicesIndex] += 6;
-#endif
+			sData.Vertices.push_back(topRight);
+			sData.Vertices.push_back(topLeft);
+			sData.Vertices.push_back(bottomLeft);
+			sData.Vertices.push_back(bottomRight);
 		}
-		
-		for (auto& texture : Core::GetCore().Get2DTextures())
+
+		uint32_t offset = 0;
+		for (size_t i = 0; i < sprites.size(); ++i)
 		{
-			if (m_inUseTextures.size() < Core::GetCore().GetMaxTextureSlots())
-				m_inUseTextures.push_back(texture);
-			else
-				break;
+			sData.Indices.push_back(offset);
+			sData.Indices.push_back(1 + offset);
+			sData.Indices.push_back(2 + offset);
+			sData.Indices.push_back(2 + offset);
+			sData.Indices.push_back(3 + offset);
+			sData.Indices.push_back(offset);
+
+			offset += 4;
 		}
 
-		createVertexBuffer();
+		// Since all our vertices and indices are in one buffer we need data extract it at the correct places
+
+		if (rData.SpriteInfos.size() > 1)
+		{
+			sData.StartVertex =
+				m_renderInfos[renderDataIndex].SpriteInfos[spriteDataIndex - 1].StartVertex +
+				m_renderInfos[renderDataIndex].SpriteInfos[spriteDataIndex - 1].SizeOfVerticesInBytes();
+		}
+		else
+			sData.StartIndex = 0;
+
+		uint32_t indexOffset = 0;
+		for (auto& data : rData.SpriteInfos)
+		{
+			SpriteData& lastData = rData.SpriteInfos[rData.SpriteInfos.size() - 1];
+
+			data.StartIndex = lastData.StartVertex +
+				(sizeof(SpriteVertex) * lastData.Vertices.size()) + indexOffset;
+			indexOffset += (uint32_t)data.SizeOfIndicesInBytes();
+		}
 	}
 
 	void SpriteRenderer::allocateDescriptorInfo()
 	{
-		if (m_descriptorInfoCreated)
-		{
-			vkFreeDescriptorSets(Core::GetCore().GetDevice()->GetDevice(),
-				p_pipeline->GetDescriptorPool(), 1, &m_descriptorSet);
-
-			m_descriptorImageInfos.clear();
-		}
-
-		for (uint32_t i = 0; i < m_inUseTextures.size(); ++i)
-		{
-			VkDescriptorImageInfo imageInfo{};
-
-			imageInfo.sampler = m_inUseTextures[i]->GetSampler();
-			imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			imageInfo.imageView = m_inUseTextures[i]->GetImageView();
-
-			m_descriptorImageInfos.push_back(imageInfo);
-		}
-
 		VkDescriptorSetAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 		allocInfo.descriptorPool = p_pipeline->GetDescriptorPool();
@@ -561,9 +636,74 @@ namespace ZVK
 			&allocInfo, &m_descriptorSet) != VK_SUCCESS)
 			throw std::runtime_error("failed to allocate descriptor sets!");
 
-		m_descriptorInfoCreated = true;
+		p_pipeline->SetIsDescriptorSetAllocated(true);
 	}
-	
+
+	void SpriteRenderer::createBuffer(uint32_t renderDataIndex)
+	{
+		RenderData& rData = m_renderInfos[renderDataIndex];
+
+		if (rData.SpriteInfos.empty()) return;
+
+		if (rData.IsBufferCreated)
+		{
+			vkDestroyBuffer(Core::GetCore().GetDevice()->GetDevice(), rData.Buffer, nullptr);
+			vkFreeMemory(Core::GetCore().GetDevice()->GetDevice(), rData.BufferMemory, nullptr);
+		}
+
+		VkDeviceSize bufferSize = 0;
+
+		rData.TotalVerticeSize = 0;
+		for (auto& data : rData.SpriteInfos)
+		{
+			bufferSize += data.SizeInBytes();
+			rData.TotalVerticeSize += (uint32_t)data.SizeOfVerticesInBytes();
+		}
+
+		VkBuffer stagingBuffer;
+		VkDeviceMemory stagingBufferMemory;
+
+		Core::GetCore().CreateBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			stagingBuffer, stagingBufferMemory);
+
+		void* data;
+		vkMapMemory(Core::GetCore().GetDevice()->GetDevice(),
+			stagingBufferMemory, 0, bufferSize, 0, &data);
+
+		// Create the vertices
+		for (auto& spriteInfo : rData.SpriteInfos)
+			memcpy((char*)data + spriteInfo.StartVertex, spriteInfo.Vertices.data(), spriteInfo.SizeOfVerticesInBytes());
+
+		// Create the indices
+		for (auto& spriteInfo : rData.SpriteInfos)
+			memcpy((char*)data + spriteInfo.StartIndex, spriteInfo.Indices.data(), spriteInfo.SizeOfIndicesInBytes());
+
+		vkUnmapMemory(Core::GetCore().GetDevice()->GetDevice(), stagingBufferMemory);
+
+		Core::GetCore().CreateBuffer(bufferSize,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+			VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			rData.Buffer, rData.BufferMemory);
+
+		Core::GetCore().CopyBuffer(stagingBuffer, rData.Buffer, bufferSize);
+
+		vkDestroyBuffer(Core::GetCore().GetDevice()->GetDevice(), stagingBuffer, nullptr);
+		vkFreeMemory(Core::GetCore().GetDevice()->GetDevice(), stagingBufferMemory, nullptr);
+
+		rData.IsBufferCreated = true;
+	}
+
+	void SpriteRenderer::createUniformBuffer()
+	{
+		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+		Core::GetCore().CreateBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			m_uniformBuffer, m_uniformMemory);
+	}
+
 	void SpriteRenderer::updateDescriptorWrites()
 	{
 		std::array<VkWriteDescriptorSet, 3> setWrites{};
@@ -587,100 +727,116 @@ namespace ZVK
 		setWrites[1].dstBinding = 1;
 		setWrites[1].dstArrayElement = 0;
 		setWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		setWrites[1].descriptorCount = static_cast<uint32_t>(m_descriptorImageInfos.size());
-		setWrites[1].dstSet = m_descriptorSet;
+		setWrites[1].descriptorCount = 1;
 		setWrites[1].pBufferInfo = 0;
-		setWrites[1].pImageInfo = m_descriptorImageInfos.data();
+		setWrites[1].pImageInfo = &m_samplerImageInfo;
+		setWrites[1].dstSet = m_descriptorSet;
 
 		setWrites[2] = {};
 		setWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		setWrites[2].dstBinding = 2;
 		setWrites[2].dstArrayElement = 0;
 		setWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		setWrites[2].descriptorCount = static_cast<uint32_t>(m_descriptorImageInfos.size());
-		setWrites[2].dstSet = m_descriptorSet;
+		setWrites[2].descriptorCount = static_cast<uint32_t>(m_textureData->DescriptorImageInfos.size());
 		setWrites[2].pBufferInfo = 0;
-		setWrites[2].pImageInfo = m_descriptorImageInfos.data();
+		setWrites[2].pImageInfo = m_textureData->DescriptorImageInfos.data();
+		setWrites[2].dstSet = m_descriptorSet;
 
 		vkUpdateDescriptorSets(Core::GetCore().GetDevice()->GetDevice(),
 			static_cast<uint32_t>(setWrites.size()), setWrites.data(), 0, nullptr);
 	}
 
-	void SpriteRenderer::createVertexBuffer()
+	void SpriteRenderer::updateBuffer(uint32_t renderDataIndex)
 	{
-		VkDeviceSize bufferSize = sizeof(m_vertices[0]) * m_vertices.size();
+		RenderData& rData = m_renderInfos[renderDataIndex];
 
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingBufferMemory;
-
-		Core::GetCore().CreateBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			stagingBuffer, stagingBufferMemory);
+		VkDeviceSize bufferSize = rData.TotalVerticeSize;
 
 		void* data;
 		vkMapMemory(Core::GetCore().GetDevice()->GetDevice(),
-			stagingBufferMemory, 0, bufferSize, 0, &data);
-		memcpy(data, m_vertices.data(), (size_t)bufferSize);
-		vkUnmapMemory(Core::GetCore().GetDevice()->GetDevice(), stagingBufferMemory);
+			rData.BufferMemory, 0, bufferSize, 0, &data);
 
-		Core::GetCore().CreateBuffer(bufferSize,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_vertexBuffer, m_vertexMemory);
+		for (auto& spriteInfo : rData.SpriteInfos)
+			memcpy((char*)data + spriteInfo.StartVertex, spriteInfo.Vertices.data(), spriteInfo.SizeOfVerticesInBytes());
 
-		Core::GetCore().CopyBuffer(stagingBuffer, m_vertexBuffer, bufferSize);
-
-		vkDestroyBuffer(Core::GetCore().GetDevice()->GetDevice(), stagingBuffer, nullptr);
-		vkFreeMemory(Core::GetCore().GetDevice()->GetDevice(), stagingBufferMemory, nullptr);
-
-		m_vertexBufferCreated = true;
+		vkUnmapMemory(Core::GetCore().GetDevice()->GetDevice(), rData.BufferMemory);
 	}
 
-	void SpriteRenderer::updateVertexBuffer(std::vector<Sprite>& sprites)
+	void SpriteRenderer::updateUBO(const Mat4& pv)
 	{
-		VkDeviceSize bufferSize = sizeof(m_vertices[0]) * m_vertices.size();
+		ZDevice* pDevice = Core::GetCore().GetDevice();
 
-		uint32_t errorID = p_errorTexture->GetRangedID();
+		UniformBufferObject ubo{};
+		ubo.pv = pv;
+
+		void* data;
+		vkMapMemory(pDevice->GetDevice(), m_uniformMemory, 0, sizeof(ubo), 0, &data);
+		memcpy(data, &ubo, sizeof(ubo));
+		vkUnmapMemory(pDevice->GetDevice(), m_uniformMemory);
+	}
+
+	void SpriteRenderer::updateVertices(std::vector<std::shared_ptr<Sprite>>& sprites,
+		uint32_t renderDataIndex)
+	{
+		RenderData& rData = m_renderInfos[renderDataIndex];
+
+		if (rData.Sprites.size() == 0) return;
 
 		size_t i = 0;
-		for (Sprite& sprite : sprites)
+		uint32_t sIndex = 0;
+		for (std::shared_ptr<Sprite> sprite : rData.Sprites)
 		{
-			float x = sprite.GetX();
-			float y = sprite.GetY();
-			float z = sprite.GetZ();
-			float width = sprite.GetWidth();
-			float height = sprite.GetHeight();
-			float depth = sprite.GetDepth();
+			// Once we finish updating one set of vertices we want to update the next
+			if (i >= rData.SpriteInfos[sIndex].Vertices.size())
+			{
+				++sIndex;
 
-			int rangedID = (sprite.GetTexture() != nullptr) ? sprite.GetTextureRangedID() : errorID;
+				for (int i = sIndex; i < rData.SpriteInfos.size(); ++i)
+				{
+					if (rData.SpriteInfos[sIndex].CanUpdateVertices)
+						break;
 
-			bool isScaled = sprite.GetScaleX() != 1.f || sprite.GetScaleY()  != 1.f|| sprite.GetScaleZ() != 1.f;
-			bool isRotated = sprite.GetRotationX() != 0.f || sprite.GetRotationY() != 0.f || sprite.GetRotationZ() != 0.f;
+					++sIndex;
+				}
 
-			Vec3 posTR(x + width, y + height, z + depth);
-			Vec3 posTL(x, y + height, z + depth);
+				i = 0;
+			}
+
+			float width = sprite->GetWidth();
+			float height = sprite->GetHeight();
+			float depth = sprite->GetDepth();
+			float x = sprite->GetX();
+			float y = sprite->GetY();
+			float z = sprite->GetZ();
+
+			bool isScaled = sprite->GetScaleX() != 1.f || sprite->GetScaleY() != 1.f || sprite->GetScaleZ() != 1.f;
+			bool isRotated = sprite->GetRotationX() != 0.f || sprite->GetRotationY() != 0.f || sprite->GetRotationZ() != 0.f;
+
 			Vec3 posBL(x, y, z + depth);
 			Vec3 posBR(x + width, y, z + depth);
+			Vec3 posTR(x + width, y + height, z + depth);
+			Vec3 posTL(x, y + height, z + depth);
 
 			if (isScaled || isRotated)
 			{
-				float halfW = sprite.GetWidth() / 2.f;
-				float halfH = sprite.GetHeight() / 2.f;
+				float halfW = width / 2.f;
+				float halfH = height / 2.f;
 
 				// Set positions to be the origin so we rotate around that
 				// We have to subtract by our sprite position because of our mvp
-				Vec2 tempTL((posTL.x - sprite.GetX()) - halfW, (posTL.y - sprite.GetY()) - halfH);
-				Vec2 tempTR((posTR.x - sprite.GetX()) - halfW, (posTR.y - sprite.GetY()) - halfH);
-				Vec2 tempBL((posBL.x - sprite.GetX()) - halfW, (posBL.y - sprite.GetY()) - halfH);
-				Vec2 tempBR((posBR.x - sprite.GetX()) - halfW, (posBR.y - sprite.GetY()) - halfH);
+				Vec2 tempTL((posTL.x - x) - halfW, (posTL.y - y) - halfH);
+				Vec2 tempTR((posTR.x - x) - halfW, (posTR.y - y) - halfH);
+				Vec2 tempBL((posBL.x - x) - halfW, (posBL.y - y) - halfH);
+				Vec2 tempBR((posBR.x - x) - halfW, (posBR.y - y) - halfH);
 
 				// Create our translation matrices
-				Mat4 scaleMat = Mat4::Scale(sprite.GetScaleX(), sprite.GetScaleY(), sprite.GetScaleZ());
-				Mat4 rotateXMat = Mat4::RotateX(sprite.GetRotationX());
-				Mat4 rotateYMat = Mat4::RotateY(sprite.GetRotationY());
-				Mat4 rotateZMat = Mat4::RotateZ(sprite.GetRotationZ());
+				Mat4 scaleMat = Mat4::Scale(sprite->GetScaleX(), sprite->GetScaleY(), sprite->GetScaleZ());
+				Mat4 rotateXMat = Mat4::RotateX(sprite->GetRotationX());
+				Mat4 rotateYMat = Mat4::RotateY(sprite->GetRotationY());
+				Mat4 rotateZMat = Mat4::RotateZ(sprite->GetRotationZ());
 
 				Mat4 translateMat = scaleMat * (rotateXMat * rotateYMat * rotateZMat);
-				
+
 				// Rotate the positions
 				tempTR = translateMat * tempTR;
 				tempTL = translateMat * tempTL;
@@ -690,110 +846,33 @@ namespace ZVK
 				// Set the positions back to their original position 
 				// (doing it how we did will rotate around the center of the sprite)
 				// We also have to add back our subtracted sprite positions because of the mvp
-				posTR = Vec3((tempTR.x + sprite.GetX()) + halfW, (tempTR.y + sprite.GetY()) + halfH, posTR.z);
-				posTL = Vec3((tempTL.x + sprite.GetX()) + halfW, (tempTL.y + sprite.GetY()) + halfH, posTL.z);
-				posBL = Vec3((tempBL.x + sprite.GetX()) + halfW, (tempBL.y + sprite.GetY()) + halfH, posBL.z);
-				posBR = Vec3((tempBR.x + sprite.GetX()) + halfW, (tempBR.y + sprite.GetY()) + halfH, posBR.z);
+				posTR = Vec3((tempTR.x + x) + halfW, (tempTR.y + y) + halfH, posTR.z);
+				posTL = Vec3((tempTL.x + x) + halfW, (tempTL.y + y) + halfH, posTL.z);
+				posBL = Vec3((tempBL.x + x) + halfW, (tempBL.y + y) + halfH, posBL.z);
+				posBR = Vec3((tempBR.x + x) + halfW, (tempBR.y + y) + halfH, posBR.z);
 			}
 
-			SpriteVertex topRight;
-			SpriteVertex topLeft;
-			SpriteVertex bottomLeft;
-			SpriteVertex bottomRight;
+			rData.SpriteInfos[sIndex].Vertices[i].pos = posTR;
+			rData.SpriteInfos[sIndex].Vertices[i].colour = sprite->GetColour();
+			rData.SpriteInfos[sIndex].Vertices[i].texCoord = { sprite->GetUVInfo().x, sprite->GetUVInfo().w };
 
-			topRight.pos = posTR;
-			topRight.colour = sprite.GetColour();
-			topRight.texCoord = { sprite.GetUVInfo().x, sprite.GetUVInfo().w };
-			topRight.texIndex = rangedID;
+			rData.SpriteInfos[sIndex].Vertices[i + 1].pos = posTL;
+			rData.SpriteInfos[sIndex].Vertices[i + 1].colour = sprite->GetColour();
+			rData.SpriteInfos[sIndex].Vertices[i + 1].texCoord = { sprite->GetUVInfo().z, sprite->GetUVInfo().w };
 
-			topLeft.pos = posTL;
-			topLeft.colour = sprite.GetColour();
-			topLeft.texCoord = { sprite.GetUVInfo().z, sprite.GetUVInfo().w };
-			topLeft.texIndex = rangedID;
+			rData.SpriteInfos[sIndex].Vertices[i + 2].pos = posBL;
+			rData.SpriteInfos[sIndex].Vertices[i + 2].colour = sprite->GetColour();
+			rData.SpriteInfos[sIndex].Vertices[i + 2].texCoord = { sprite->GetUVInfo().z, sprite->GetUVInfo().y };
 
-			bottomLeft.pos = posBL;
-			bottomLeft.colour = sprite.GetColour();
-			bottomLeft.texCoord = { sprite.GetUVInfo().z, sprite.GetUVInfo().y };
-			bottomLeft.texIndex = rangedID;
-
-			bottomRight.pos = posBR;
-			bottomRight.colour = sprite.GetColour();
-			bottomRight.texCoord = { sprite.GetUVInfo().x, sprite.GetUVInfo().y };
-			bottomRight.texIndex = rangedID;
-
-			if (!sprite.GetTexture())
-				sprite.SetTexture(p_errorTexture);
-
-			m_vertices[i] =topRight;
-			m_vertices[i+1] =topLeft;
-			m_vertices[i+2] =bottomLeft;
-			m_vertices[i+3] =bottomRight;
+			rData.SpriteInfos[sIndex].Vertices[i + 3].pos = posBR;
+			rData.SpriteInfos[sIndex].Vertices[i + 3].colour = sprite->GetColour();
+			rData.SpriteInfos[sIndex].Vertices[i + 3].texCoord = { sprite->GetUVInfo().x, sprite->GetUVInfo().y };
 
 			i += 4;
 		}
-
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingBufferMemory;
-
-		Core::GetCore().CreateBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			stagingBuffer, stagingBufferMemory);
-
-		void* data;
-		vkMapMemory(Core::GetCore().GetDevice()->GetDevice(),
-			stagingBufferMemory, 0, bufferSize, 0, &data);
-		memcpy(data, m_vertices.data(), (size_t)bufferSize);
-		vkUnmapMemory(Core::GetCore().GetDevice()->GetDevice(), stagingBufferMemory);
-
-		Core::GetCore().CopyBuffer(stagingBuffer, m_vertexBuffer, bufferSize);
-
-		vkDestroyBuffer(Core::GetCore().GetDevice()->GetDevice(), stagingBuffer, nullptr);
-		vkFreeMemory(Core::GetCore().GetDevice()->GetDevice(), stagingBufferMemory, nullptr);
-	}
-
-	void SpriteRenderer::createIndexBuffer()
-	{
-		VkDeviceSize bufferSize = sizeof(m_indices[0]) * m_indices.size();
-
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingBufferMemory;
-
-		Core::GetCore().CreateBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			stagingBuffer, stagingBufferMemory);
-
-		void* data;
-		vkMapMemory(Core::GetCore().GetDevice()->GetDevice(),
-			stagingBufferMemory, 0, bufferSize, 0, &data);
-		memcpy(data, m_indices.data(), (size_t)bufferSize);
-		vkUnmapMemory(Core::GetCore().GetDevice()->GetDevice(), stagingBufferMemory);
-
-		Core::GetCore().CreateBuffer(bufferSize,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_indexBuffer, m_indexMemory);
-
-		Core::GetCore().CopyBuffer(stagingBuffer, m_indexBuffer, bufferSize);
-
-		vkDestroyBuffer(Core::GetCore().GetDevice()->GetDevice(), stagingBuffer, nullptr);
-		vkFreeMemory(Core::GetCore().GetDevice()->GetDevice(), stagingBufferMemory, nullptr);
-	}
-
-	void SpriteRenderer::createUniformBuffer()
-	{
-		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
-
-		Core::GetCore().CreateBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			m_uniformBuffer, m_uniformMemory);
 	}
 
 	void SpriteRenderer::swapchainRecreateEvent(SwapchainRecreateEvent& e)
 	{
-		vkDestroyBuffer(Core::GetCore().GetDevice()->GetDevice(), m_vertexBuffer, nullptr);
-		vkFreeMemory(Core::GetCore().GetDevice()->GetDevice(), m_vertexMemory, nullptr);
-
-		createVertexBuffer();
-
-		m_swapchainRecreated = true;
 	}
 }

@@ -1,10 +1,11 @@
-#include "../../../Headers/Render/Pipelines/SpritePipeline.h"
+#include "../../../Headers/Render/Pipelines/ShapePipeline.h"
 
 #include "../../../Headers/Core/Core.h"
 
+
 namespace ZVK
 {
-	SpritePipeline::SpritePipeline(const std::string& vertPath, const std::string& fragPath,
+	ShapePipeline::ShapePipeline(const std::string& vertPath, const std::string& fragPath,
 		PipelineConfigInfo* configInfo)
 		: IPipeline(vertPath, fragPath, configInfo)
 	{
@@ -13,7 +14,7 @@ namespace ZVK
 		createDescriptorPool();
 	}
 
-	SpritePipeline::~SpritePipeline()
+	ShapePipeline::~ShapePipeline()
 	{
 		ZDevice* pDevice = Core::GetCore().GetDevice();
 
@@ -24,7 +25,7 @@ namespace ZVK
 
 		vkDestroyDescriptorSetLayout(pDevice->GetDevice(), m_descriptorSetLayout, nullptr);
 		vkDestroyDescriptorPool(pDevice->GetDevice(), m_descriptorPool, nullptr);
-
+		
 		if (canDeleteConfigInfo)
 		{
 			if (m_configInfo)
@@ -35,7 +36,7 @@ namespace ZVK
 		}
 	}
 
-	void SpritePipeline::createGraphicsPipeline()
+	void ShapePipeline::createGraphicsPipeline()
 	{
 		ShaderHelper sHelper;
 
@@ -65,8 +66,8 @@ namespace ZVK
 		VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
 		vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
-		auto bindingDescription = SpriteVertex::GetBindingDescription();
-		auto attributeDescriptions = SpriteVertex::GetAttributeDescriptions();
+		auto bindingDescription = ShapeVertex::GetBindingDescription();
+		auto attributeDescriptions = ShapeVertex::GetAttributeDescriptions();
 
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
@@ -95,14 +96,14 @@ namespace ZVK
 		rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 		rasterizer.depthBiasEnable = VK_FALSE;
 		rasterizer.depthBiasConstantFactor = 0.f; 
-		rasterizer.depthBiasClamp = 0.f;
-		rasterizer.depthBiasSlopeFactor = 0.f; 
+		rasterizer.depthBiasClamp = 0.f; 
+		rasterizer.depthBiasSlopeFactor = 0.f;
 
 		VkPipelineMultisampleStateCreateInfo multisampling{};
 		multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 		multisampling.sampleShadingEnable = VK_TRUE;
 		multisampling.rasterizationSamples = pDevice->GetMSAA_Samples();
-		multisampling.minSampleShading = .2f; 
+		multisampling.minSampleShading = .2f;
 		multisampling.pSampleMask = nullptr; 
 		multisampling.alphaToCoverageEnable = VK_FALSE; 
 		multisampling.alphaToOneEnable = VK_FALSE; 
@@ -117,7 +118,7 @@ namespace ZVK
 
 		VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
 		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-		pipelineLayoutInfo.setLayoutCount = 1; 
+		pipelineLayoutInfo.setLayoutCount = 1;
 		pipelineLayoutInfo.pSetLayouts = &m_descriptorSetLayout;
 
 		if (vkCreatePipelineLayout(pDevice->GetDevice(), &pipelineLayoutInfo,
@@ -139,7 +140,7 @@ namespace ZVK
 		pipelineInfo.layout = m_pipelineLayout;
 		pipelineInfo.renderPass = pSwapchain->GetRenderPass();
 		pipelineInfo.subpass = 0;
-		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; 
+		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 		pipelineInfo.basePipelineIndex = -1;
 
 		if (vkCreateGraphicsPipelines(pDevice->GetDevice(), VK_NULL_HANDLE, 1, &pipelineInfo,
@@ -150,18 +151,16 @@ namespace ZVK
 		vkDestroyShaderModule(pDevice->GetDevice(), fragShaderModule, nullptr);
 	}
 
-	void SpritePipeline::createDescriptorSetLayout()
+	void ShapePipeline::createDescriptorSetLayout()
 	{
 		VkDescriptorBindingFlagsEXT bindFlags[] =
 		{
-			VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT,
-			VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT,
 			VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT
 		};
 
 		VkDescriptorSetLayoutBindingFlagsCreateInfoEXT extendedInfo{};
 		extendedInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-		extendedInfo.bindingCount = 3;
+		extendedInfo.bindingCount = 1;
 		extendedInfo.pBindingFlags = bindFlags;
 		extendedInfo.pNext = nullptr;
 
@@ -172,50 +171,31 @@ namespace ZVK
 		uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 		uboLayoutBinding.pImmutableSamplers = nullptr;
 
-		VkDescriptorSetLayoutBinding samplerLayoutBinding{};
-		VkDescriptorSetLayoutBinding sampledImageLayoutBinding{};
-
-		samplerLayoutBinding.binding = 1;
-		samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-		samplerLayoutBinding.descriptorCount = 1;
-		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-		samplerLayoutBinding.pImmutableSamplers = nullptr;
-
-		sampledImageLayoutBinding.binding = 2;
-		sampledImageLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		sampledImageLayoutBinding.descriptorCount = Core::GetCore().GetMaxTextureSlots();
-		sampledImageLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-		sampledImageLayoutBinding.pImmutableSamplers = nullptr;
-
-		std::array<VkDescriptorSetLayoutBinding, 3> bindings =
-		{ uboLayoutBinding, samplerLayoutBinding, sampledImageLayoutBinding };
+		std::array<VkDescriptorSetLayoutBinding, 1> bindings =
+		{ uboLayoutBinding };
 
 		VkDescriptorSetLayoutCreateInfo layoutInfo{};
 		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 		layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
 		layoutInfo.pBindings = bindings.data();
 		layoutInfo.pNext = &extendedInfo;
-		
+
 		if (vkCreateDescriptorSetLayout(Core::GetCore().GetDevice()->GetDevice(), &layoutInfo,
 			nullptr, &m_descriptorSetLayout) != VK_SUCCESS)
 			throw std::runtime_error("Failed to create descriptor set layout!");
 	}
 
-	void SpritePipeline::createDescriptorPool()
+	void ShapePipeline::createDescriptorPool()
 	{
-		std::array<VkDescriptorPoolSize, 3> poolSizes{};
+		std::array<VkDescriptorPoolSize, 1> poolSizes{};
 		poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		poolSizes[0].descriptorCount = 1;
-		poolSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-		poolSizes[1].descriptorCount = 1;
-		poolSizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		poolSizes[2].descriptorCount = Core::GetCore().GetMaxTextureSlots();
 
 		VkDescriptorPoolCreateInfo poolInfo{};
 		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 		poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
 		poolInfo.pPoolSizes = poolSizes.data();
-		poolInfo.maxSets = 25;
+		poolInfo.maxSets = 1;
 		poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 
 		if (vkCreateDescriptorPool(Core::GetCore().GetDevice()->GetDevice(), &poolInfo,

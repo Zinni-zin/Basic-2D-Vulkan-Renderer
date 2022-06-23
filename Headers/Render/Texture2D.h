@@ -20,7 +20,7 @@ namespace ZVK
 
 		void LoadTexture(const std::string& filePath, VkFormat colourFormat = VK_FORMAT_R8G8B8A8_UNORM);
 
-		void CreateTextureSampler();
+		//void CreateTextureSampler();
 
 		void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
 			VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
@@ -45,10 +45,8 @@ namespace ZVK
 		inline uint32_t GetMipLevels() const { return m_mipLevels; }
 
 		inline uint32_t GetID() const { return m_id; }
-		inline uint32_t GetRangedID() const { return m_rangedID; }
 
 		inline void SetID(uint32_t id) { m_id = id; }
-		inline void SetRangedID(uint32_t id) { m_rangedID = id; }
 	private:
 
 		uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
@@ -63,10 +61,7 @@ namespace ZVK
 		uint32_t m_mipLevels;
 
 		uint32_t m_id;
-		int m_rangedID;
-		static std::queue<uint32_t> s_freedIDs;
-		static std::queue<int> s_freedRangedIDs;
+		//static std::queue<uint32_t> s_freedIDs;
 		static uint32_t s_idCounter;
-		static int s_idRangedCounter;
 	};
 }

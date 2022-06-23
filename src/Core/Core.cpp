@@ -1,10 +1,16 @@
-#include "Headers/Core.h"
+#include "../../Headers/Core/Core.h"
 
 #include <iostream>
 #include <chrono>
 
+#include <cassert>
+
 namespace ZVK
 {
+	bool Core::s_isCreated = false;
+
+	Core* s_coreInstance;
+
 	VkResult CreateDebugUtilsMessengerEXT(VkInstance instance,
 		const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
 		const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger)
@@ -56,10 +62,22 @@ namespace ZVK
 		glfwTerminate();
 	}
 
-	Core& Core::GetCore()
+	Core& Core::CreateCore()
 	{
 		static Core core;
+
+		if (!s_isCreated)
+			s_coreInstance = &core;
+
+		s_isCreated = true;
 		return core;
+	}
+
+	Core& Core::GetCore()
+	{
+		assert(s_coreInstance && "Make sure you call CreateCore() before GetCore()!");
+
+		return *s_coreInstance;
 	}
 
 	void Core::Init(const std::string& title, int width, int height)
@@ -77,8 +95,7 @@ namespace ZVK
 		createSurface();
 
 		p_device->Init(this);
-		p_swapchain->CreateSwapchain();
-		p_swapchain->CreateImageViews();
+		p_swapchain->Create();
 		createCommandPool();
 	}
 
@@ -133,13 +150,6 @@ namespace ZVK
 		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
 		std::vector<VkExtensionProperties> extensions(extensionCount);
 		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data());
-
-		/*
-		std::cout << "Available extensions:\n";
-
-		for (const auto& extension : extensions)
-			std::cout << "\t" << extension.extensionName << "\n";
-		*/
 	}
 
 	void Core::createSurface()
@@ -225,13 +235,14 @@ namespace ZVK
 		vkBindBufferMemory(p_device->GetDevice(), buffer, bufferMemory, 0);
 	}
 
-	void Core::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+	void Core::CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size,
+		VkDeviceSize srcOffset, VkDeviceSize dstOffset)
 	{
 		VkCommandBuffer cmdBuffer = BeginSingleTimeCommands();
 
 		VkBufferCopy copyRegion{};
-		copyRegion.srcOffset = 0; // Optional
-		copyRegion.dstOffset = 0; // Optional
+		copyRegion.srcOffset = srcOffset;
+		copyRegion.dstOffset = dstOffset;
 		copyRegion.size = size;
 
 		vkCmdCopyBuffer(cmdBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
@@ -296,11 +307,6 @@ namespace ZVK
 			throw std::runtime_error("Failed to Allocate Image Memory!");
 
 		vkBindImageMemory(p_device->GetDevice(), image, imageMemory, 0);
-	}
-
-	void Core::Clear2DTextures(bool deleteTextures)
-	{
-		p_textures.clear();
 	}
 
 	uint32_t Core::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)

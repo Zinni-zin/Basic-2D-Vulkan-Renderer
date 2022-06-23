@@ -1,10 +1,10 @@
-#include "Headers/Camera.h"
+#include "../../Headers/Render/Camera.h"
 
 #include <iostream>
 
-#include "../Core/Headers/Window.h"
+#include "../../Headers/Core/Window.h"
 
-#include "../Core/Headers/Core.h"
+#include "../../Headers/Core/Core.h"
 
 namespace ZVK
 {
@@ -17,13 +17,19 @@ namespace ZVK
 		m_mouseScrolledEvent = std::bind(&Camera::onMouseScrolled, std::ref(*this),
 			std::placeholders::_1);
 
+		m_swapchainRecreateEvent = std::bind(&Camera::onSwapchainRecreated, std::ref(*this),
+			std::placeholders::_1);
+
 		ZWindow::GetDispatchers().MouseScrolled.Attach(m_mouseScrolledEvent);
+		Core::GetCore().GetSwapchainRecreateDispatcher().Attach(m_swapchainRecreateEvent);
+
 		SetProjection(0.f, (float)viewWidth, (float)viewHeight, 0.f);
 	}
 
 	Camera::~Camera()
 	{
 		ZWindow::GetDispatchers().MouseScrolled.Detach(m_mouseScrolledEvent);
+		Core::GetCore().GetSwapchainRecreateDispatcher().Detach(m_swapchainRecreateEvent);
 	}
 
 	void Camera::Update()
@@ -122,6 +128,13 @@ namespace ZVK
 		
 			m_translationSpeed = m_zoomLevel / (m_zoomLevel * 200);
 		}
+	}
+
+	void Camera::onSwapchainRecreated(SwapchainRecreateEvent& e)
+	{
+		m_viewWidth = e.GetWidth();
+		m_viewHeight = e.GetHeight();
+		SetProjection(0.f, (float)m_viewWidth, (float)m_viewHeight, 0.f);
 	}
 
 	void Camera::SetMoveKeys(KeyCode right, KeyCode left, KeyCode up, KeyCode down)

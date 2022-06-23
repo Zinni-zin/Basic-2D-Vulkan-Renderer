@@ -6,9 +6,9 @@
 
 #include <string>
 
-#include "../../Events/Events.h"
+#include "../Events/Events.h"
 
-#include "../../Math/Vectors.h"
+#include "../Math/Vectors.h"
 
 namespace ZVK
 {
@@ -32,9 +32,6 @@ namespace ZVK
 		inline int GetHight() const { return m_dimensions.y; }
 
 		inline bool ShouldClose() const { return m_isWindowClosed;  }
-		inline bool IsVsync() const { return m_isVsync; }
-
-		inline bool SetVsync(bool val) { m_isVsync = val; }
 	
 		inline static DispatcherInfo& GetDispatchers() { return *p_dispatcher; }
 
@@ -49,7 +46,6 @@ namespace ZVK
 	private:
 		GLFWwindow* p_window;
 		Vec2i m_dimensions;
-		bool m_isVsync;
 
 		bool m_isWindowClosed = false;
 

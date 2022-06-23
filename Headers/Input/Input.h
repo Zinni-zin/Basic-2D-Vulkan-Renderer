@@ -5,7 +5,7 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#include "../Math/Vectors.h"
+#include "../../Headers/Math/Vectors.h"
 
 namespace ZVK
 {

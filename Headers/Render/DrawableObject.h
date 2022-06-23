@@ -9,7 +9,7 @@
 #include <vulkan/vulkan.h>
 
 #define ROW_MAJOR
-#include "../../Math/ZMath.h"
+#include "../Math/ZMath.h"
 
 namespace ZVK
 {
@@ -83,7 +83,5 @@ namespace ZVK
 		Vec3 m_scale = Vec3::One();
 		Vec3 m_rotation = Vec3::Zero();
 		Vec4 m_colour;
-
-		// In the future have m_isScaled and m_isRotated and set them to true when the set functions are used
 	};
 }

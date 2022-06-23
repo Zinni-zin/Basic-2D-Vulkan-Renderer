@@ -1,4 +1,4 @@
-#include "Headers/Sprite.h"
+#include "../../Headers/Render/Sprite.h"
 #include <iostream>
 
 #include <cassert>

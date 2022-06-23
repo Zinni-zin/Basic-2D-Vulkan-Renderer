@@ -5,13 +5,13 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#include "../../Events/Events.h"
+#include "../Events/Events.h"
 
-#include "../../Input/Input.h"
+#include "../Input/Input.h"
 
 #define ROW_MAJOR
 #define DEPTH_ZERO_TO_ONE
-#include "../../Math/ZMath.h"
+#include "../Math/ZMath.h"
 
 namespace ZVK
 {
@@ -59,6 +59,7 @@ namespace ZVK
 		void calcViewMatrix();
 		
 		void onMouseScrolled(MouseScrolledEvent& e);
+		void onSwapchainRecreated(SwapchainRecreateEvent& e);
 
 	private:
 		
@@ -78,6 +79,7 @@ namespace ZVK
 		int m_viewWidth, m_viewHeight;
 
 		std::function<void(MouseScrolledEvent&)> m_mouseScrolledEvent;
+		std::function<void(SwapchainRecreateEvent&)> m_swapchainRecreateEvent;
 
 		Input& m_input;
 		KeyCode m_moveRightKey = KeyCode::D;

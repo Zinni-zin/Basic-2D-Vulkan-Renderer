@@ -9,9 +9,9 @@
 
 #include <vulkan/vulkan.h>
 
-#include "../../Core/Headers/Device.h"
+#include "../../Headers/Core/Device.h"
 
-#include "../../Events/Events.h"
+#include "../../Headers/Events/Events.h"
 
 namespace ZVK
 {
@@ -28,8 +28,14 @@ namespace ZVK
 		ZSwapchain();
 		~ZSwapchain();
 
+		void Create();
+
 		void CreateSwapchain();
 		void CreateImageViews();
+		void CreateFrameBuffers();
+		void CreateRenderPass();
+		void CreateColourResources();
+		void CreateDepthResources();
 
 		void Cleanup();
 		void RecreateSwapchain();
@@ -42,12 +48,23 @@ namespace ZVK
 		inline const std::vector<VkImageView> GetSwapchainImageViews() const { return m_swapchainImageViews; }
 		inline const std::vector<VkFramebuffer> GetSwapchainFrameBuffers() const { return m_swapchainFrameBuffers; }
 		
+		inline const VkRenderPass GetRenderPass() const { return m_renderpass; }
+		
+		inline const VkImage GetColourImage() const { return m_colourImage; };
+		inline const VkDeviceMemory GetColourImageMemory() const { return m_colourImageMemory; }
+		inline const VkImageView GetColourImageView() const { return m_colourImageView; }
+		inline const VkImage GetDepthImage() const { return m_depthImage; }
+		inline const VkDeviceMemory GetDepthImageMemory() const { return m_depthImageMemory; }
+		inline const VkImageView GetDepthImageView() const { return m_depthImageView; }
+
+		// inline const std::vector<VkFramebuffer> GetSwapchainFrameBuffers() const { return m_swapchainFrameBuffers; }
+
 		inline const bool IsSwapchainRecreated() const { return m_isSwapchainRecreated; }
 		inline void SwapchainRecreatedFinished() { m_isSwapchainRecreated = false; }
 
 		inline const bool IsFrameBufferResized() const { return m_isFrameBufferResized; }
 	private:
-		
+
 		SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device);
 		VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
 		VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
@@ -65,6 +82,17 @@ namespace ZVK
 		std::vector<VkImage> m_swapchainImages;
 		std::vector<VkImageView> m_swapchainImageViews;
 		std::vector<VkFramebuffer> m_swapchainFrameBuffers;
+
+
+		VkRenderPass m_renderpass;
+
+		VkImage m_colourImage;
+		VkDeviceMemory m_colourImageMemory;
+		VkImageView m_colourImageView;
+
+		VkImage m_depthImage;
+		VkDeviceMemory m_depthImageMemory;
+		VkImageView m_depthImageView;
 
 		bool m_isSwapchainRecreated = false;
 		bool m_isFrameBufferResized = false;

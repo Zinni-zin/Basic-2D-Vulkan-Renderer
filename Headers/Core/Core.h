@@ -13,11 +13,11 @@
 #include "Window.h"
 #include "Device.h"
 
-#include "../../Render/Headers/Swapchain.h"
+#include "../Render/Swapchain.h"
 
-#include "../../Render/Headers/Texture2D.h"
+#include "../Render/Texture2D.h"
 
-#include "../../Events/Events.h"
+#include "../Events/Events.h"
 
 #define MAX_FRAMES_IN_FLIGHT 2
 
@@ -41,7 +41,8 @@ namespace ZVK
 		void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
 			VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
 
-		void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+		void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size,
+			VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0);
 
 		VkImageView CreateImageView(VkImage image, VkFormat format, VkImageAspectFlags flags,
 			uint32_t mipLevels);
@@ -71,24 +72,11 @@ namespace ZVK
 		inline const std::vector<const char*>& GetValidationLayers() const { return m_validationLayers; }
 
 		inline Dispatcher<SwapchainRecreateEvent>& GetSwapchainRecreateDispatcher() { return m_recreateDispatcher; }
+		inline Dispatcher<SwapchainCleanupEvent>& GetSwapchainCleanupDispatcher() { return m_swapchainCleanupDispatcher; }
 
 		inline const uint32_t GetMaxTextureSlots() const { return p_device->GetMaxTextureSlots(); }
 
-		inline std::vector<Texture2D*> Get2DTextures() { return p_textures; }
-		inline void AddTexture2D(Texture2D* texture) { p_textures.push_back(texture); }
-		inline std::vector<Texture2D*>::iterator RemoveTexture2D(Texture2D* texture)
-		{ return p_textures.erase(std::find(p_textures.begin(), p_textures.end(), texture)); }
-		void Clear2DTextures(bool deleteTextures = false);
-		void PopBackTexture2D() { p_textures.pop_back(); }
-		void SwapTextures(Texture2D* texture) 
-		{
-			auto value = p_textures.back();
-			value->SetID(texture->GetID());
-			value->SetRangedID(texture->GetRangedID());
-
-			std::iter_swap(std::find(p_textures.begin(), p_textures.end(), texture), p_textures.rbegin());
-		}
-
+		static Core& CreateCore();
 		static Core& GetCore();
 
 		static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
@@ -112,14 +100,15 @@ namespace ZVK
 		void setupDebugMessenger();
 		bool checkValidationLayerSupport();
 
+		static bool s_isCreated;
+
 	private:
 		std::unique_ptr<ZWindow> p_window;
 		ZDevice* p_device;
 		ZSwapchain* p_swapchain;
 
 		Dispatcher<SwapchainRecreateEvent> m_recreateDispatcher;
-
-		std::vector<Texture2D*> p_textures;
+		Dispatcher<SwapchainCleanupEvent> m_swapchainCleanupDispatcher;
 
 		VkInstance m_instance;
 		VkDebugUtilsMessengerEXT m_debugMessenger;

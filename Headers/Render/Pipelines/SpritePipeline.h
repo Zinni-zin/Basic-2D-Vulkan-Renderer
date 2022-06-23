@@ -3,7 +3,7 @@
 #include "IPipeline.h"
 
 #define ROW_MAJOR
-#include "../../../Math/ZMath.h"
+#include "../../Math/ZMath.h"
 
 namespace ZVK
 {

@@ -1,4 +1,4 @@
-#include "Headers/Swapchain.h"
+#include "../../Headers/Render/Swapchain.h"
 
 #include <stdexcept>
 #include <algorithm>
@@ -7,7 +7,7 @@
 
 #include <iostream>
 
-#include "../Core/Headers/Core.h"
+#include "../../Headers/Core/Core.h"
 
 namespace ZVK
 {
@@ -22,6 +22,16 @@ namespace ZVK
 	ZSwapchain::~ZSwapchain()
 	{
 		ZWindow::GetDispatchers().FrameBufferResize.Detach(m_frameBufferResizeEvent);
+	}
+
+	void ZSwapchain::Create()
+	{
+		CreateSwapchain();
+		CreateImageViews();
+		CreateRenderPass();
+		CreateColourResources();
+		CreateDepthResources();
+		CreateFrameBuffers();
 	}
 
 	void ZSwapchain::CreateSwapchain()
@@ -98,17 +108,166 @@ namespace ZVK
 		}
 	}
 
+	void ZSwapchain::CreateFrameBuffers()
+	{
+		m_swapchainFrameBuffers.resize(m_swapchainImageViews.size());
+
+		for (size_t i = 0; i < m_swapchainImageViews.size(); ++i)
+		{
+			std::array<VkImageView, 3> attachments =
+			{
+				m_colourImageView,
+				m_depthImageView,
+				m_swapchainImageViews[i]
+			};
+
+			VkFramebufferCreateInfo framebufferInfo{};
+			framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+			framebufferInfo.renderPass = m_renderpass;
+			framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+			framebufferInfo.pAttachments = attachments.data();
+			framebufferInfo.width = m_swapchainExtent.width;
+			framebufferInfo.height = m_swapchainExtent.height;
+			framebufferInfo.layers = 1;
+
+			if (vkCreateFramebuffer(Core::GetCore().GetDevice()->GetDevice(), &framebufferInfo,
+				nullptr, &m_swapchainFrameBuffers[i]) != VK_SUCCESS)
+				throw std::runtime_error("Failed to create framebuffer!");
+		}
+	}
+
+	void ZSwapchain::CreateRenderPass()
+	{
+		VkAttachmentDescription colourAttachment{};
+		colourAttachment.format = m_swapchainImageFormat;
+		colourAttachment.samples = Core::GetCore().GetDevice()->GetMSAA_Samples();
+		colourAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		colourAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		colourAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		colourAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		colourAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		colourAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+		VkAttachmentDescription colourAttachmentResolve{};
+		colourAttachmentResolve.format = m_swapchainImageFormat;
+		colourAttachmentResolve.samples = VK_SAMPLE_COUNT_1_BIT;
+		colourAttachmentResolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		colourAttachmentResolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		colourAttachmentResolve.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		colourAttachmentResolve.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		colourAttachmentResolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		colourAttachmentResolve.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+		VkAttachmentDescription depthAttachment{};
+		depthAttachment.format = Core::GetCore().FindDepthFormat();
+		depthAttachment.samples = Core::GetCore().GetDevice()->GetMSAA_Samples();
+		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+		VkAttachmentReference colourAttachmentRef{};
+		colourAttachmentRef.attachment = 0;
+		colourAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+		VkAttachmentReference colourAttachmentResolverRef{};
+		colourAttachmentResolverRef.attachment = 2;
+		colourAttachmentResolverRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+		VkAttachmentReference depthAttachmentRef{};
+		depthAttachmentRef.attachment = 1;
+		depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+		VkSubpassDescription subpass{};
+		subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpass.colorAttachmentCount = 1;
+		subpass.pColorAttachments = &colourAttachmentRef;
+		subpass.pDepthStencilAttachment = &depthAttachmentRef;
+		subpass.pResolveAttachments = &colourAttachmentResolverRef;
+
+		VkSubpassDependency dependency{};
+		dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+		dependency.dstSubpass = 0;
+		dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+		dependency.srcAccessMask = 0;
+		dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+		dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+		std::array<VkAttachmentDescription, 3> attachments =
+		{ colourAttachment, depthAttachment, colourAttachmentResolve };
+
+		VkRenderPassCreateInfo renderPassInfo{};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+		renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+		renderPassInfo.pAttachments = attachments.data();
+		renderPassInfo.subpassCount = 1;
+		renderPassInfo.pSubpasses = &subpass;
+		renderPassInfo.dependencyCount = 1;
+		renderPassInfo.pDependencies = &dependency;
+
+		if (vkCreateRenderPass(Core::GetCore().GetDevice()->GetDevice(), &renderPassInfo,
+			nullptr, &m_renderpass) != VK_SUCCESS)
+			throw std::runtime_error("Failed to create render pass!");
+	}
+
+	void ZSwapchain::CreateColourResources()
+	{
+		Core::GetCore().CreateImage(
+			m_swapchainExtent.width, m_swapchainExtent.height, 1, 
+			Core::GetCore().GetDevice()->GetMSAA_Samples(),
+			m_swapchainImageFormat, VK_IMAGE_TILING_OPTIMAL,
+			VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_colourImage, m_colourImageMemory
+		);
+
+		m_colourImageView = Core::GetCore().CreateImageView(m_colourImage, m_swapchainImageFormat,
+			VK_IMAGE_ASPECT_COLOR_BIT, 1);
+	}
+
+	void ZSwapchain::CreateDepthResources()
+	{
+		VkFormat depthFormat = Core::GetCore().FindDepthFormat();
+
+		Core::GetCore().CreateImage(
+			m_swapchainExtent.width, m_swapchainExtent.height, 1,
+			Core::GetCore().GetDevice()->GetMSAA_Samples(), depthFormat,
+			VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_depthImage, m_depthImageMemory
+		);
+
+		m_depthImageView = Core::GetCore().CreateImageView(m_depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+	}
+
 	void ZSwapchain::Cleanup()
 	{
 		ZDevice* pDevice = Core::GetCore().GetDevice();
-
-		for (size_t i = 0; i < m_swapchainFrameBuffers.size(); ++i)
-			vkDestroyFramebuffer(pDevice->GetDevice(), m_swapchainFrameBuffers[i], nullptr);
 
 		for (size_t i = 0; i < m_swapchainImageViews.size(); ++i)
 			vkDestroyImageView(pDevice->GetDevice(), m_swapchainImageViews[i], nullptr);
 
 		vkDestroySwapchainKHR(pDevice->GetDevice(), m_swapchain, nullptr);
+
+		vkDestroyImageView(pDevice->GetDevice(), m_colourImageView, nullptr);
+		vkDestroyImage(pDevice->GetDevice(), m_colourImage, nullptr);
+		vkFreeMemory(pDevice->GetDevice(), m_colourImageMemory, nullptr);
+
+		vkDestroyImageView(pDevice->GetDevice(), m_depthImageView, nullptr);
+		vkDestroyImage(pDevice->GetDevice(), m_depthImage, nullptr);
+		vkFreeMemory(pDevice->GetDevice(), m_depthImageMemory, nullptr);
+
+		SwapchainCleanupEvent e;
+		if(!Core::GetCore().GetWindow().ShouldClose())
+			Core::GetCore().GetSwapchainCleanupDispatcher().Notify(e);
+
+		for (size_t i = 0; i < m_swapchainFrameBuffers.size(); ++i)
+			vkDestroyFramebuffer(pDevice->GetDevice(), m_swapchainFrameBuffers[i], nullptr);
+
+		vkDestroyRenderPass(pDevice->GetDevice(), m_renderpass, nullptr);
 	}
 
 	void ZSwapchain::RecreateSwapchain()
@@ -130,6 +289,10 @@ namespace ZVK
 
 		CreateSwapchain();
 		CreateImageViews();
+		CreateRenderPass();
+		CreateColourResources();
+		CreateDepthResources();
+		CreateFrameBuffers();
 
 		Core::GetCore().GetSwapchainRecreateDispatcher().Notify(recreateEvent);
 

@@ -1,4 +1,4 @@
-#include "Headers/Device.h"
+#include "../../Headers/Core/Device.h"
 
 #include <string>
 
@@ -8,10 +8,9 @@
 #include <iostream>
 #include <stdexcept>
 
+#include "../../Headers/Core/Core.h"
 
-#include "Headers/Core.h"
-
-#include "../Render/Headers/Swapchain.h"
+#include "../../Headers/Render/Swapchain.h"
 
 namespace ZVK
 {
@@ -78,6 +77,11 @@ namespace ZVK
 		indexingFeatures.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
 		indexingFeatures.runtimeDescriptorArray = VK_TRUE;
 
+		VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT blendFeatures{};
+		blendFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT;
+		blendFeatures.advancedBlendCoherentOperations = VK_TRUE;
+		blendFeatures.pNext = &indexingFeatures;
+
 		VkDeviceCreateInfo deviceCreateInfo{};
 
 		std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
@@ -103,7 +107,7 @@ namespace ZVK
 		deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 		deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(m_deviceExtensions.size());
 		deviceCreateInfo.ppEnabledExtensionNames = m_deviceExtensions.data();
-		deviceCreateInfo.pNext = &indexingFeatures;
+		deviceCreateInfo.pNext = &blendFeatures;
 
 		if (p_core->EnabledValidationLayers())
 		{
@@ -134,9 +138,13 @@ namespace ZVK
 		indexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT;
 		indexingFeatures.pNext = nullptr;
 
+		VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT blendFeatures{};
+		blendFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT;
+		blendFeatures.pNext = &indexingFeatures;
+
 		VkPhysicalDeviceFeatures2 deviceFeatures2{};
 		deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-		deviceFeatures2.pNext = &indexingFeatures;
+		deviceFeatures2.pNext = &blendFeatures;
 
 		vkGetPhysicalDeviceProperties(device, &deviceProperties);
 		vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
@@ -159,6 +167,7 @@ namespace ZVK
 
 		if (!indices.IsComplete() && !extensionsSupported && !swapChainAdequate &&
 			!deviceFeatures.samplerAnisotropy &&
+			!blendFeatures.advancedBlendCoherentOperations &&
 			!indexingFeatures.descriptorBindingUpdateUnusedWhilePending &&
 			!indexingFeatures.descriptorBindingPartiallyBound &&
 			!indexingFeatures.runtimeDescriptorArray)
