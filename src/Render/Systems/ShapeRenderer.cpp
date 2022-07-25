@@ -440,9 +440,9 @@ namespace ZVK
 			float width = shape->GetWidth();
 			float height = shape->GetHeight();
 			float depth = shape->GetDepth();
-			float x = shape->GetX() + (width / 2.f);
-			float y = shape->GetY() + (height / 2.f);
-			float z = shape->GetZ() + (depth / 2.f);
+			float x = shape->GetX();
+			float y = shape->GetY();
+			float z = shape->GetZ();
 
 			ShapeType shapeType = shape->GetShapeType();
 
